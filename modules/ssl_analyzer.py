@@ -142,10 +142,11 @@ def _check_hsts(hostname: str, timeout: int = 8) -> dict:
             result["raw"] = hsts
             for part in hsts.split(";"):
                 part = part.strip().lower()
-                if part.startswith("max-age"):
+                key, _, val = part.partition("=")
+                if key.strip() == "max-age":
                     try:
-                        result["max_age"] = int(part.split("=", 1)[1].strip())
-                    except (ValueError, IndexError):
+                        result["max_age"] = int(val.strip())
+                    except ValueError:
                         pass
                 elif part == "includesubdomains":
                     result["include_subdomains"] = True
