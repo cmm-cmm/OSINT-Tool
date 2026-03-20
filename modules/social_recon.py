@@ -239,6 +239,86 @@ def _try_facebook_scraper3(identifier: str, api_key: str, result: dict):
         pass
 
 
+def _try_facebook_scraper3_page_details(identifier: str, api_key: str, result: dict):
+    """
+    Fetch full page contact details via /page/details?url=...
+    Returns phone, email, address, website, followers, categories, intro, cover.
+    This is the primary source for business contact info (phone, email, address).
+    """
+    profile_url = (
+        f"https://www.facebook.com/profile.php?id={identifier}"
+        if identifier.isdigit()
+        else f"https://www.facebook.com/{identifier}"
+    )
+    try:
+        r = requests.get(
+            "https://facebook-scraper3.p.rapidapi.com/page/details",
+            params={"url": profile_url},
+            headers={
+                "X-RapidAPI-Key": api_key,
+                "X-RapidAPI-Host": "facebook-scraper3.p.rapidapi.com",
+            },
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return
+        d = r.json().get("results") or r.json()
+        if not d or not isinstance(d, dict):
+            return
+
+        if not result.get("exists"):
+            result["exists"] = True
+        if not result.get("is_public"):
+            result["is_public"] = True
+
+        if not result.get("display_name"):
+            result["display_name"] = d.get("name")
+        if not result.get("numeric_id") and d.get("page_id"):
+            result["numeric_id"] = d["page_id"]
+        if result.get("is_verified") is None and d.get("verified") is not None:
+            result["is_verified"] = d["verified"]
+
+        # Contact fields — these are the primary additions
+        if not result.get("phone") and d.get("phone"):
+            result["phone"] = d["phone"]
+        if not result.get("email") and d.get("email"):
+            result["email"] = d["email"]
+        if not result.get("address") and d.get("address"):
+            result["address"] = d["address"]
+        if not result.get("website") and d.get("website"):
+            result["website"] = d["website"]
+
+        # Stats
+        if not result.get("follower_count") and d.get("followers") is not None:
+            result["follower_count"] = str(d["followers"])
+        if not result.get("following_count") and d.get("following") is not None:
+            result["following_count"] = str(d["following"])
+
+        # Category
+        cats = d.get("categories") or []
+        if not result.get("category") and cats:
+            # Skip generic "Page" label; pick the first descriptive one
+            desc_cats = [c for c in cats if c.lower() != "page"]
+            result["category"] = ", ".join(desc_cats) if desc_cats else cats[0]
+
+        # Description / intro
+        if not result.get("description") and d.get("intro"):
+            result["description"] = d["intro"]
+
+        # Images
+        if not result.get("profile_pic") and d.get("image"):
+            result["profile_pic"] = d["image"]
+        if not result.get("cover_photo") and d.get("cover_image"):
+            result["cover_photo"] = d["cover_image"]
+
+        if not result.get("profile_url") and d.get("url"):
+            result["profile_url"] = d["url"]
+
+        result["data_sources"].append("Facebook Scraper3 (page/details)")
+    except Exception:
+        pass
+
+
 def _try_facebook_scraper3_people(identifier: str, api_key: str, result: dict):
     """
     Search Facebook personal profiles via /search/people.
@@ -550,6 +630,7 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
     # ── Facebook Scraper3 RapidAPI (optional enrichment) ─────────────────
     if fb_scraper_key:
         _try_facebook_scraper3(identifier, fb_scraper_key, result)
+        _try_facebook_scraper3_page_details(identifier, fb_scraper_key, result)
         _try_facebook_scraper3_people(identifier, fb_scraper_key, result)
         _try_facebook_scraper3_posts(identifier, fb_scraper_key, result)
         _try_facebook_scraper3_search_posts(identifier, fb_scraper_key, result)
