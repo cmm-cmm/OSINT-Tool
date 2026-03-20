@@ -6,11 +6,17 @@ For security research and investigation purposes only.
 """
 import json
 import re
+import time
 import html as _html_lib
+from datetime import datetime, timezone
+from urllib.parse import quote
 import requests
 from rich.console import Console
 
 console = Console()
+
+FACEBOOK_GRAPH_API_VERSION = "v21.0"  # Update when Facebook retires this version
+SCRAPER3_DELAY = 0.5  # Seconds between sequential RapidAPI calls to avoid HTTP 429
 
 # Desktop User-Agent (for OG/JSON extraction)
 HEADERS = {
@@ -30,13 +36,15 @@ FB_CRAWLER_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
+# OG meta tag patterns: allow arbitrary attributes between property/name and content
+# re.DOTALL lets [^>]* match across newlines in multi-line meta tags
 _OG_RE = re.compile(
-    r'<meta\s+(?:property|name)=["\']og:([^"\']+)["\']\s+content=["\']([^"\']*)["\']',
-    re.IGNORECASE,
+    r'<meta\s+(?:property|name)=["\']og:([^"\']+)["\'][^>]*?\s+content=["\']([^"\']*)["\']',
+    re.IGNORECASE | re.DOTALL,
 )
 _OG_RE2 = re.compile(
-    r'<meta\s+content=["\']([^"\']*)["\'\s]+(?:property|name)=["\']og:([^"\']+)["\']',
-    re.IGNORECASE,
+    r'<meta\s+content=["\']([^"\']*)["\'][^>]*?\s+(?:property|name)=["\']og:([^"\']+)["\']',
+    re.IGNORECASE | re.DOTALL,
 )
 
 # Patterns for IDs embedded in Facebook's JS bundles
@@ -69,14 +77,23 @@ def _extract_og(html: str) -> dict:
 
 
 def _normalize_fb_id(identifier: str) -> str:
-    """Extract Facebook username or numeric ID from a URL or bare string."""
-    if "facebook.com/" in identifier:
-        identifier = identifier.rstrip("/").split("facebook.com/")[-1]
-        if identifier.startswith("profile.php"):
-            m = re.search(r'id=(\d+)', identifier)
-            identifier = m.group(1) if m else identifier
+    """Extract Facebook username or numeric ID from a URL or bare string.
+
+    Handles: facebook.com, m.facebook.com, mbasic.facebook.com,
+             web.facebook.com, fb.com — with or without https://.
+    """
+    m = re.search(
+        r'(?:https?://)?(?:www\.)?(?:m\.|mbasic\.|web\.)?(?:facebook\.com|fb\.com)/([^#]+?)(?:#|$)',
+        identifier,
+        re.IGNORECASE,
+    )
+    if m:
+        identifier = m.group(1).rstrip("/")
+        if re.match(r'profile\.php', identifier, re.IGNORECASE):
+            id_m = re.search(r'id=(\d+)', identifier)
+            identifier = id_m.group(1) if id_m else identifier
         else:
-            identifier = identifier.split("?")[0].split("#")[0]
+            identifier = identifier.split("?")[0]
     return identifier.lstrip("@").strip()
 
 
@@ -103,26 +120,31 @@ def _parse_og_description(desc: str) -> dict:
     Examples:
       "Coca-Cola. 107,673,233 likes · 1,686 talking about this. Page description..."
       "johndoe. 2,543 followers · 12 following. Photos and posts."
+      "1.234.567 người theo dõi · 890 đang nói về điều này."  ← Vietnamese format
     """
     info = {"likes": None, "followers_og": None, "following": None, "talking_about": None, "text": desc}
 
-    m = re.search(r'([\d,]+)\s*likes?\s*[·•]\s*([\d,]+)\s*talking about this', desc, re.IGNORECASE)
-    if m:
-        info["likes"] = m.group(1).replace(",", "")
-        info["talking_about"] = m.group(2).replace(",", "")
+    def _normalize_num(s: str) -> str:
+        """Normalize both EN (1,234) and VN (1.234) thousands separators."""
+        return re.sub(r'[,.]', '', s)
 
-    m = re.search(r'([\d,]+)\s*followers?\s*[·•]\s*([\d,]+)\s*following', desc, re.IGNORECASE)
+    m = re.search(r'([\d,.]+)\s*likes?\s*[·•]\s*([\d,.]+)\s*talking about this', desc, re.IGNORECASE)
     if m:
-        info["followers_og"] = m.group(1).replace(",", "")
-        info["following"] = m.group(2).replace(",", "")
+        info["likes"] = _normalize_num(m.group(1))
+        info["talking_about"] = _normalize_num(m.group(2))
+
+    m = re.search(r'([\d,.]+)\s*followers?\s*[·•]\s*([\d,.]+)\s*following', desc, re.IGNORECASE)
+    if m:
+        info["followers_og"] = _normalize_num(m.group(1))
+        info["following"] = _normalize_num(m.group(2))
 
     if not info["followers_og"]:
-        m = re.search(r'([\d,]+)\s*(?:followers?|ng\u01b0\u1eddi theo d\u00f5i)', desc, re.IGNORECASE)
+        m = re.search(r'([\d,.]+)\s*(?:followers?|ng\u01b0\u1eddi theo d\u00f5i)', desc, re.IGNORECASE)
         if m:
-            info["followers_og"] = m.group(1).replace(",", "")
+            info["followers_og"] = _normalize_num(m.group(1))
 
     # Strip engagement numbers to get the actual description text
-    clean = re.sub(r'[\d,]+\s*(?:likes?|followers?|following|talking about this)[^\n.]*[·•]?\s*', '', desc).strip()
+    clean = re.sub(r'[\d,.]+\s*(?:likes?|followers?|following|talking about this|người theo dõi|đang theo dõi)[^\n.]*[·•]?\s*', '', desc).strip()
     clean = re.sub(r'^[^\s.]{1,80}\.\s*', '', clean).strip()  # strip leading "PageName. " prefix
     clean = re.sub(r'^[\s.·•,]+', '', clean).strip()           # strip any remaining leading punctuation
     if clean and len(clean) > 5:
@@ -134,7 +156,7 @@ def _try_graph_api(result: dict, identifier: str):
     """Try Facebook Graph API without access token — returns limited data for public pages."""
     try:
         r = requests.get(
-            f"https://graph.facebook.com/v21.0/{identifier}",
+            f"https://graph.facebook.com/{FACEBOOK_GRAPH_API_VERSION}/{identifier}",
             params={
                 "fields": (
                     "name,category,description,about,fan_count,followers_count,"
@@ -399,14 +421,13 @@ def _try_facebook_scraper3_posts(identifier: str, api_key: str, result: dict):
         posts_raw = r.json().get("results", [])
         if not posts_raw:
             return
-        import datetime
         result["recent_posts"] = []
         total_reactions = 0
         total_comments = 0
         for p in posts_raw:
             ts = p.get("timestamp")
             date_str = (
-                datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
                 if ts else None
             )
             post = {
@@ -454,14 +475,13 @@ def _try_facebook_scraper3_search_posts(identifier: str, api_key: str, result: d
         # Only populate if we don't already have posts
         if result.get("recent_posts"):
             return
-        import datetime
         result["recent_posts"] = []
         total_reactions = 0
         total_comments = 0
         for p in posts_raw:
             ts = p.get("timestamp")
             date_str = (
-                datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
                 if ts else None
             )
             author = p.get("author") or {}
@@ -630,9 +650,13 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
     # ── Facebook Scraper3 RapidAPI (optional enrichment) ─────────────────
     if fb_scraper_key:
         _try_facebook_scraper3(identifier, fb_scraper_key, result)
+        time.sleep(SCRAPER3_DELAY)
         _try_facebook_scraper3_page_details(identifier, fb_scraper_key, result)
+        time.sleep(SCRAPER3_DELAY)
         _try_facebook_scraper3_people(identifier, fb_scraper_key, result)
+        time.sleep(SCRAPER3_DELAY)
         _try_facebook_scraper3_posts(identifier, fb_scraper_key, result)
+        time.sleep(SCRAPER3_DELAY)
         _try_facebook_scraper3_search_posts(identifier, fb_scraper_key, result)
 
     # ── Infer account type ─────────────────────────────────────────────────
@@ -700,8 +724,8 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
 
     # ── Investigation dorks ─────────────────────────────────────────────────
     q = result.get("display_name") or identifier
-    enc_q = q.replace(" ", "+")
-    enc_id = identifier.replace(" ", "+")
+    enc_q = quote(q)
+    enc_id = quote(identifier)
     result["dorks"] = [
         {
             "label": "Profile on Facebook",
@@ -727,7 +751,7 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
             "label": "Reverse image search profile pic",
             "query": "Find accounts sharing the same profile picture",
             "url": (
-                f"https://www.google.com/searchbyimage?image_url={result['profile_pic']}"
+                f"https://www.google.com/searchbyimage?image_url={quote(result['profile_pic'])}"
                 if result.get("profile_pic")
                 else "https://images.google.com/"
             ),
@@ -959,22 +983,22 @@ def print_facebook_results(data: dict):
     # Engagement stats
     stats = []
     if data.get("follower_count"):
-        stats.append(f"[cyan]{int(data['follower_count']):,}[/cyan] followers" if data["follower_count"].isdigit()
+        stats.append(f"[cyan]{int(data['follower_count']):,}[/cyan] followers" if str(data["follower_count"]).isdigit()
                      else f"[cyan]{data['follower_count']}[/cyan] followers")
-    if data.get("friend_count"):
-        stats.append(f"[cyan]{data['friend_count']}[/cyan] friends")
-    if data.get("posts_count"):
-        stats.append(f"[cyan]{data['posts_count']}[/cyan] posts")
+    if data.get("following_count"):
+        stats.append(f"[cyan]{data['following_count']}[/cyan] following")
+    if data.get("likes_count"):
+        stats.append(f"[cyan]{data['likes_count']}[/cyan] likes")
+    if data.get("talking_about"):
+        stats.append(f"[cyan]{data['talking_about']}[/cyan] talking about this")
     if stats:
         console.print(f"  Stats        : {' | '.join(stats)}")
 
     # Identity fields
     if data.get("location"):
         console.print(f"  Location     : {data['location']}")
-    if data.get("hometown"):
-        console.print(f"  Hometown     : {data['hometown']}")
-    if data.get("work_education"):
-        console.print(f"  Work/Edu     : {data['work_education']}")
+    if data.get("address"):
+        console.print(f"  Address      : {data['address']}")
     if data.get("website"):
         console.print(f"  Website      : [cyan]{data['website']}[/cyan]")
     if data.get("email"):
@@ -983,8 +1007,6 @@ def print_facebook_results(data: dict):
         console.print(f"  Phone        : {data['phone']}")
     if data.get("founded"):
         console.print(f"  Founded      : {data['founded']}")
-    if data.get("joined"):
-        console.print(f"  Joined       : {data['joined']}")
 
     if data.get("description"):
         desc = data["description"][:200] + ("..." if len(data.get("description","")) > 200 else "")
