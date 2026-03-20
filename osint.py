@@ -391,6 +391,30 @@ def cmd_youtube(channel, yt_key, report, output):
         save_report(channel, {"youtube": yt_data}, output)
 
 
+@cli.command("contacts")
+@click.argument("url")
+@click.option("--api-key", "api_key", envvar="WEBSITE_CONTACTS_KEY", default=None,
+              help="Website Contacts Scraper RapidAPI key (env: WEBSITE_CONTACTS_KEY)")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
+def cmd_contacts(url, api_key, report, output):
+    """Scrape emails, phone numbers, and social links from a website.
+
+    Examples:
+    \b
+    python osint.py contacts example.com
+    python osint.py contacts https://shopee.vn --report
+    python osint.py contacts vnexpress.net --report
+    """
+    from modules.website_contacts import website_contacts_scrape, print_website_contacts
+    print_banner()
+    console.print(f"[dim]Scraping contacts from {url}...[/dim]")
+    contacts_data = website_contacts_scrape(url, api_key=api_key or os.getenv("WEBSITE_CONTACTS_KEY"))
+    print_website_contacts(contacts_data)
+    if report:
+        save_report(url, {"website_contacts": contacts_data}, output)
+
+
 @cli.command("full")
 @click.argument("target")
 @click.option("--type", "target_type",
@@ -470,16 +494,17 @@ def cmd_menu():
     print_banner()
 
     MENU_ITEMS = [
-        ("1", "Domain / IP Investigation",           "domain"),
-        ("2", "Email Reconnaissance",                "email"),
-        ("3", "Username Search (40+ platforms)",     "username"),
-        ("4", "Phone Number Analysis",               "phone"),
-        ("5", "Person / Organization Dorks",         "person"),
-        ("6", "Social Media Recon (FB / TikTok)",    "social"),
-        ("7", "YouTube Channel Recon",               "youtube"),
-        ("8", "Breach / Data Leak Check",            "breach"),
-        ("9", "Full Scan + Report",                  "full"),
-        ("0", "Exit",                                None),
+        ("1",  "Domain / IP Investigation",           "domain"),
+        ("2",  "Email Reconnaissance",                "email"),
+        ("3",  "Username Search (40+ platforms)",     "username"),
+        ("4",  "Phone Number Analysis",               "phone"),
+        ("5",  "Person / Organization Dorks",         "person"),
+        ("6",  "Social Media Recon (FB / TikTok)",    "social"),
+        ("7",  "Website Contacts Scraper",            "contacts"),
+        ("8",  "YouTube Channel Recon",               "youtube"),
+        ("9",  "Breach / Data Leak Check",            "breach"),
+        ("10", "Full Scan + Report",                  "full"),
+        ("0",  "Exit",                                None),
     ]
 
     while True:
@@ -492,7 +517,7 @@ def cmd_menu():
         console.print("\n[bold cyan]═══ MAIN MENU ═══[/bold cyan]")
         console.print(menu_table)
 
-        choice = Prompt.ask("\n[bold]Select[/bold]", choices=[m[0] for m in MENU_ITEMS], default="0")
+        choice = Prompt.ask("\n[bold]Select[/bold]", choices=[m[0] for m in MENU_ITEMS], default="0", show_choices=False)
         if choice == "0":
             console.print("[dim]Goodbye.[/dim]")
             break
@@ -573,6 +598,15 @@ def cmd_menu():
                 print_tiktok_results(tt_data)
             if do_report:
                 save_report(fb_id or tt_user, all_data, output_dir)
+
+        elif mode == "contacts":
+            from modules.website_contacts import website_contacts_scrape, print_website_contacts
+            site_url = Prompt.ask("Website URL or domain (e.g. shopee.vn or https://example.com)")
+            console.print("[dim]Scraping website contacts...[/dim]")
+            contacts_data = website_contacts_scrape(site_url, api_key=os.getenv("WEBSITE_CONTACTS_KEY"))
+            print_website_contacts(contacts_data)
+            if do_report:
+                save_report(site_url, {"website_contacts": contacts_data}, output_dir)
 
         elif mode == "youtube":
             from modules.youtube_recon import youtube_recon, print_youtube_results
