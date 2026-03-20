@@ -14,6 +14,7 @@ import sys
 import os
 import re
 import json
+from ipaddress import AddressValueError, IPv4Address
 from pathlib import Path
 from urllib.parse import urlparse
 from dotenv import load_dotenv
@@ -56,7 +57,14 @@ def _normalize_target(target: str) -> str:
 
 
 def _is_valid_target(target: str) -> bool:
-    return bool(_DOMAIN_RE.match(target) or _IP_RE.match(target))
+    if _DOMAIN_RE.match(target):
+        return True
+
+    try:
+        IPv4Address(target)
+        return True
+    except AddressValueError:
+        return False
 
 
 def _load_targets(single: str | None, targets_file: str | None, mode: str) -> list:
