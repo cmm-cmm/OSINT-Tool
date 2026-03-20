@@ -240,6 +240,97 @@ def build_html_report(target: str, all_data: dict) -> str:
             html += "</ul>"
         sections.append(_section("Facebook Intelligence", html))
 
+    # Breach Check
+    if "breach" in all_data:
+        br = all_data["breach"]
+        summary = br.get("summary", {})
+        total = summary.get("total_breaches", 0)
+        total_pastes = summary.get("total_pastes", 0)
+        status_cls = "danger" if total > 0 else "found"
+        status_label = f"⚠ Tìm thấy ~{total} vụ rò rỉ" if total > 0 else "✓ Không tìm thấy"
+        html = f'<p class="{status_cls}"><strong>{status_label}</strong></p>'
+        srcs = summary.get("sources_checked", [])
+        if srcs:
+            html += f'<p class="meta">Nguồn đã kiểm tra: {", ".join(srcs)}</p>'
+
+        # LeakCheck
+        lc = br.get("leakcheck", {}) or {}
+        html += "<h3 style='color:#79c0ff;margin:12px 0 6px'>① LeakCheck.io (miễn phí)</h3>"
+        if lc.get("found"):
+            sources = lc.get("sources", [])
+            html += f'<p class="danger">⚠ Xuất hiện trong {len(sources)} nguồn</p>'
+            html += "<ul>" + "".join(f"<li>{s}</li>" for s in sources) + "</ul>"
+        elif lc.get("note"):
+            html += f'<p class="meta">{lc["note"]}</p>'
+        elif lc.get("error"):
+            html += f'<p class="warning">Lỗi: {lc["error"]}</p>'
+        else:
+            html += '<p class="found">✓ Không tìm thấy trong LeakCheck.io</p>'
+
+        # BreachDirectory
+        bd = br.get("breachdirectory", {}) or {}
+        html += "<h3 style='color:#79c0ff;margin:12px 0 6px'>② BreachDirectory (RapidAPI)</h3>"
+        if bd.get("note"):
+            html += "<br>".join(f'<p class="meta">{line}</p>' for line in bd["note"].splitlines())
+        elif bd.get("found"):
+            size = bd.get("size", len(bd.get("result", [])))
+            html += f'<p class="danger">⚠ {size} bản ghi bị lộ</p>'
+            rows = []
+            for entry in bd.get("result", [])[:20]:
+                src_raw = entry.get("sources", [])
+                src = src_raw[0] if isinstance(src_raw, list) and src_raw else str(src_raw or "?")
+                fields = ", ".join(entry.get("fields", [])) or "—"
+                h_type = entry.get("password_type", "—")
+                rows.append((src, fields, h_type))
+            if rows:
+                html += _table(rows, ["Nguồn (Source)", "Dữ liệu bị lộ", "Hash type"])
+        elif bd.get("error"):
+            html += f'<p class="warning">Lỗi: {bd["error"]}</p>'
+        else:
+            html += '<p class="found">✓ Không tìm thấy</p>'
+
+        # HIBP
+        hibp = br.get("hibp", {}) or {}
+        html += "<h3 style='color:#79c0ff;margin:12px 0 6px'>③ HaveIBeenPwned</h3>"
+        if hibp.get("note"):
+            html += "<br>".join(f'<p class="meta">{line}</p>' for line in hibp["note"].splitlines())
+        elif hibp.get("breaches"):
+            breaches = hibp["breaches"]
+            html += f'<p class="danger">⚠ Có trong {len(breaches)} vụ rò rỉ:</p>'
+            rows = [
+                (b.get("name", "?"), b.get("date", "?"),
+                 f'{b["pwn_count"]:,}' if b.get("pwn_count") else "?",
+                 ", ".join((b.get("data_classes") or [])[:4]))
+                for b in breaches
+            ]
+            html += _table(rows, ["Tên vụ rò rỉ", "Ngày", "Số bản ghi", "Loại dữ liệu"])
+        else:
+            html += '<p class="found">✓ Không tìm thấy trong HIBP breaches</p>'
+        if (hibp.get("pastes") or []):
+            html += f'<p class="warning">⚠ Xuất hiện trong {len(hibp["pastes"])} paste(s) công khai</p>'
+
+        # Pwned Password
+        pw = br.get("pwned_password")
+        if pw is not None:
+            html += "<h3 style='color:#79c0ff;margin:12px 0 6px'>④ HIBP Pwned Passwords</h3>"
+            if pw.get("exposed"):
+                html += f'<p class="danger">⚠ Mật khẩu đã bị lộ {pw["count"]:,} lần!</p>'
+            elif pw.get("error"):
+                html += f'<p class="warning">Lỗi: {pw["error"]}</p>'
+            else:
+                html += '<p class="found">✓ Mật khẩu chưa xuất hiện trong rò rỉ đã biết</p>'
+
+        # Dorks
+        if br.get("dorks"):
+            html += "<br><strong>Tra cứu thêm:</strong><ul>"
+            html += "".join(
+                f'<li><a href="{d["url"]}" target="_blank">{d["label"]}</a></li>'
+                for d in br["dorks"]
+            )
+            html += "</ul>"
+
+        sections.append(_section(f"Breach / Data Leak Check — {br.get('target','')}", html))
+
     # TikTok
     if "tiktok" in all_data:
         tt = all_data["tiktok"]
@@ -250,15 +341,28 @@ def build_html_report(target: str, all_data: dict) -> str:
             ("Status", f'<span class="{status_cls}">{status_label}</span>'),
         ]
         if tt.get("display_name"):
-            rows.append(("Display Name", f'<strong>{tt["display_name"]}</strong>'))
+            verified_badge = ' <span style="color:#f5a623">✓ Verified</span>' if tt.get("is_verified") else ""
+            rows.append(("Display Name", f'<strong>{tt["display_name"]}</strong>{verified_badge}'))
         if tt.get("bio"):
             rows.append(("Bio", tt["bio"][:200]))
-        if tt.get("follower_count"):
-            rows.append(("Followers", tt["follower_count"]))
-        if tt.get("video_count"):
-            rows.append(("Videos", tt["video_count"]))
+        if tt.get("region"):
+            rows.append(("Region", tt["region"]))
+        if tt.get("follower_count") is not None:
+            fc = tt["follower_count"]
+            rows.append(("Followers", f"{fc:,}" if isinstance(fc, int) else str(fc)))
+        if tt.get("following_count") is not None:
+            fw = tt["following_count"]
+            rows.append(("Following", f"{fw:,}" if isinstance(fw, int) else str(fw)))
+        if tt.get("likes_count") is not None:
+            lc = tt["likes_count"]
+            rows.append(("Total Likes", f"{lc:,}" if isinstance(lc, int) else str(lc)))
+        if tt.get("video_count") is not None:
+            vc = tt["video_count"]
+            rows.append(("Videos", f"{vc:,}" if isinstance(vc, int) else str(vc)))
         if tt.get("profile_pic"):
             rows.append(("Profile Picture", f'<a href="{tt["profile_pic"]}" target="_blank">View image ↗</a>'))
+        if tt.get("data_sources"):
+            rows.append(("Data Sources", ", ".join(tt["data_sources"])))
         html = _table(rows, ["Field", "Value"])
         if tt.get("security_notes"):
             html += "<br><strong>⚠ Security Observations:</strong><ul>"
@@ -272,6 +376,59 @@ def build_html_report(target: str, all_data: dict) -> str:
             )
             html += "</ul>"
         sections.append(_section("TikTok Intelligence", html))
+
+    # YouTube
+    if "youtube" in all_data:
+        yt = all_data["youtube"]
+        status_cls = "found" if yt.get("exists") else "danger"
+        status_label = "Found" if yt.get("exists") else "Not Found"
+        rows = [
+            ("Status", f'<span class="{status_cls}">{status_label}</span>'),
+        ]
+        if yt.get("channel_url"):
+            rows.append(("Channel URL", f'<a href="{yt["channel_url"]}" target="_blank">{yt["channel_url"]}</a>'))
+        if yt.get("channel_id"):
+            rows.append(("Channel ID", f'<code>{yt["channel_id"]}</code>'))
+        if yt.get("handle"):
+            rows.append(("Handle", yt["handle"]))
+        if yt.get("title"):
+            verified_badge = ' <span style="color:#f5a623">✓ Verified</span>' if yt.get("verified") else ""
+            rows.append(("Channel Name", f'<strong>{yt["title"]}</strong>{verified_badge}'))
+        if yt.get("country"):
+            rows.append(("Country", yt["country"]))
+        if yt.get("subscriber_count"):
+            rows.append(("Subscribers", str(yt["subscriber_count"])))
+        if yt.get("video_count"):
+            rows.append(("Videos", str(yt["video_count"])))
+        if yt.get("view_count"):
+            rows.append(("Total Views", str(yt["view_count"])))
+        if yt.get("has_business_email"):
+            rows.append(("Business Email", "Yes (see About page)"))
+        if yt.get("description"):
+            rows.append(("Description", yt["description"][:200]))
+        if yt.get("links"):
+            def _yt_link(lnk):
+                href = lnk if lnk.startswith("http") else f"https://{lnk}"
+                return f'<a href="{href}" target="_blank">{lnk}</a>'
+            links_html = " | ".join(_yt_link(lnk) for lnk in yt["links"][:5])
+            rows.append(("Links", links_html))
+        if yt.get("avatar"):
+            rows.append(("Avatar", f'<a href="{yt["avatar"]}" target="_blank">View image ↗</a>'))
+        if yt.get("data_sources"):
+            rows.append(("Data Sources", ", ".join(yt["data_sources"])))
+        html = _table(rows, ["Field", "Value"])
+        if yt.get("security_notes"):
+            html += "<br><strong>⚠ Security Observations:</strong><ul>"
+            html += "".join(f'<li class="warning">{n}</li>' for n in yt["security_notes"])
+            html += "</ul>"
+        if yt.get("dorks"):
+            html += "<br><strong>Investigation Dorks:</strong><ul>"
+            html += "".join(
+                f'<li><a href="{d["url"]}" target="_blank">{d["label"]}</a>: <code>{d["query"]}</code></li>'
+                for d in yt["dorks"]
+            )
+            html += "</ul>"
+        sections.append(_section("YouTube Intelligence", html))
 
     # Dorks
     if "dorks" in all_data:
