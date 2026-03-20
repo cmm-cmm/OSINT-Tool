@@ -430,6 +430,53 @@ def build_html_report(target: str, all_data: dict) -> str:
             html += "</ul>"
         sections.append(_section("YouTube Intelligence", html))
 
+    # Website Contacts
+    if "website_contacts" in all_data:
+        wc = all_data["website_contacts"]
+        domain = wc.get("domain") or wc.get("url", "")
+        emails = wc.get("emails", [])
+        phones = wc.get("phone_numbers", [])
+        socials = wc.get("socials", {})
+
+        html = ""
+        if wc.get("error"):
+            html += f'<p class="danger">Error: {wc["error"]}</p>'
+        else:
+            html += f'<p>Domain: <strong>{domain}</strong></p>'
+
+            if emails:
+                email_rows = [
+                    (e.get("value", ""), e.get("sources", [""])[0] if e.get("sources") else "")
+                    for e in emails[:100]
+                ]
+                html += f"<br><strong>Emails ({len(emails)} found):</strong>"
+                html += _table(email_rows, ["Email Address", "Source"])
+                if len(emails) > 100:
+                    html += f'<p class="warning">... and {len(emails) - 100} more addresses</p>'
+
+            if phones:
+                phone_rows = [
+                    (p.get("value", ""), p.get("sources", [""])[0] if p.get("sources") else "")
+                    for p in phones
+                ]
+                html += f"<br><strong>Phone Numbers ({len(phones)} found):</strong>"
+                html += _table(phone_rows, ["Phone Number", "Source"])
+
+            if socials:
+                social_rows = [
+                    (platform.capitalize(), f'<a href="{link}" target="_blank">{link}</a>')
+                    for platform, link in socials.items()
+                ]
+                html += "<br><strong>Social Media Links:</strong>"
+                html += _table(social_rows, ["Platform", "URL"])
+
+            if wc.get("security_notes"):
+                html += "<br><strong>⚠ Security Observations:</strong><ul>"
+                html += "".join(f'<li class="warning">{n}</li>' for n in wc["security_notes"])
+                html += "</ul>"
+
+        sections.append(_section(f"Website Contacts — {domain}", html))
+
     # Dorks
     if "dorks" in all_data:
         rows = []
