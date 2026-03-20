@@ -363,10 +363,12 @@ def cmd_breach(target, password, hibp_key, breachdir_key, report, output):
               help="Instagram username (with or without @)")
 @click.option("--twitter", "tw_user", default=None, metavar="USERNAME",
               help="Twitter/X username (with or without @)")
+@click.option("--reddit", "reddit_user", default=None, metavar="USERNAME",
+              help="Reddit username (with or without u/)")
 @click.option("--report", is_flag=True, help="Save HTML+JSON report")
 @click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
-def cmd_social(fb_id, tt_user, ig_user, tw_user, report, output):
-    """Investigate Facebook, TikTok, Instagram, and Twitter/X public profiles.
+def cmd_social(fb_id, tt_user, ig_user, tw_user, reddit_user, report, output):
+    """Investigate Facebook, TikTok, Instagram, Twitter/X and Reddit public profiles.
 
     Examples:
     \b
@@ -374,15 +376,17 @@ def cmd_social(fb_id, tt_user, ig_user, tw_user, report, output):
     python osint.py social --tiktok johndoe
     python osint.py social --instagram johndoe
     python osint.py social --twitter johndoe
-    python osint.py social --facebook johndoe --tiktok johndoe --report
+    python osint.py social --reddit johndoe
+    python osint.py social --facebook johndoe --reddit johndoe --report
     """
     from modules.social_recon import (
         facebook_recon, tiktok_recon, print_facebook_results, print_tiktok_results,
         instagram_recon, print_instagram_results, twitter_recon, print_twitter_results,
+        reddit_recon, print_reddit_results,
     )
 
-    if not fb_id and not tt_user and not ig_user and not tw_user:
-        console.print("[red]✗ Provide at least one platform: --facebook, --tiktok, --instagram, or --twitter[/red]")
+    if not fb_id and not tt_user and not ig_user and not tw_user and not reddit_user:
+        console.print("[red]✗ Provide at least one platform: --facebook, --tiktok, --instagram, --twitter, or --reddit[/red]")
         raise SystemExit(1)
 
     print_banner()
@@ -416,8 +420,14 @@ def cmd_social(fb_id, tt_user, ig_user, tw_user, report, output):
         all_data["twitter"] = tw_data
         print_twitter_results(tw_data)
 
+    if reddit_user:
+        console.print("[dim]Fetching Reddit profile...[/dim]")
+        reddit_data = reddit_recon(reddit_user)
+        all_data["reddit"] = reddit_data
+        print_reddit_results(reddit_data)
+
     if report:
-        identifier = fb_id or tt_user or ig_user or tw_user
+        identifier = fb_id or tt_user or ig_user or tw_user or reddit_user
         save_report(identifier, all_data, output)
 
 
@@ -562,7 +572,7 @@ def cmd_menu():
         ("3",  "Username Search (40+ platforms)",                "username"),
         ("4",  "Phone Number Analysis",                          "phone"),
         ("5",  "Person / Organization Dorks",                    "person"),
-        ("6",  "Social Media Recon (FB / TikTok / IG / Twitter)", "social"),
+        ("6",  "Social Media Recon (FB / TikTok / IG / Twitter / Reddit)", "social"),
         ("7",  "Website Contacts Scraper",                       "contacts"),
         ("8",  "YouTube Channel Recon",                          "youtube"),
         ("9",  "Breach / Data Leak Check",                       "breach"),
@@ -646,12 +656,14 @@ def cmd_menu():
             from modules.social_recon import (
                 facebook_recon, tiktok_recon, print_facebook_results, print_tiktok_results,
                 instagram_recon, print_instagram_results, twitter_recon, print_twitter_results,
+                reddit_recon, print_reddit_results,
             )
             fb_id = Prompt.ask("Facebook username / URL / numeric ID (leave blank to skip)", default="")
             tt_user = Prompt.ask("TikTok username (leave blank to skip)", default="")
             ig_user = Prompt.ask("Instagram username (leave blank to skip)", default="")
             tw_user = Prompt.ask("Twitter/X username (leave blank to skip)", default="")
-            if not fb_id and not tt_user and not ig_user and not tw_user:
+            reddit_user = Prompt.ask("Reddit username (leave blank to skip)", default="")
+            if not fb_id and not tt_user and not ig_user and not tw_user and not reddit_user:
                 console.print("[red]✗ At least one platform is required[/red]")
                 continue
             all_data = {}
@@ -679,8 +691,13 @@ def cmd_menu():
                 tw_data = twitter_recon(tw_user, bearer_token=os.getenv("TWITTER_BEARER_TOKEN"))
                 all_data["twitter"] = tw_data
                 print_twitter_results(tw_data)
+            if reddit_user:
+                console.print("[dim]Fetching Reddit profile...[/dim]")
+                reddit_data = reddit_recon(reddit_user)
+                all_data["reddit"] = reddit_data
+                print_reddit_results(reddit_data)
             if do_report:
-                save_report(fb_id or tt_user or ig_user or tw_user, all_data, output_dir)
+                save_report(fb_id or tt_user or ig_user or tw_user or reddit_user, all_data, output_dir)
 
         elif mode == "contacts":
             from modules.website_contacts import website_contacts_scrape, print_website_contacts

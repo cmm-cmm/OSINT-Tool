@@ -391,6 +391,74 @@ def build_html_report(target: str, all_data: dict) -> str:
             html += "</ul>"
         sections.append(_section("Facebook Intelligence", html))
 
+    # Reddit
+    if "reddit" in all_data:
+        rd = all_data["reddit"]
+        status_cls = "found" if rd.get("exists") and not rd.get("is_suspended") else ("warning" if rd.get("is_suspended") else "danger")
+        status_label = "Suspended" if rd.get("is_suspended") else ("Active" if rd.get("exists") else "Not Found / Deleted")
+        rows = [
+            ("URL", f'<a href="{rd["profile_url"]}" target="_blank">{rd["profile_url"]}</a>'),
+            ("Status", f'<span class="{status_cls}">{status_label}</span>'),
+        ]
+        if rd.get("display_name") and rd["display_name"] != rd.get("username"):
+            rows.append(("Display Name", f'<strong>{rd["display_name"]}</strong>'))
+        if rd.get("created_at"):
+            rows.append(("Joined", rd["created_at"]))
+        if rd.get("bio"):
+            rows.append(("Bio", rd["bio"][:300]))
+        if rd.get("total_karma") is not None:
+            ck = rd.get("comment_karma", 0)
+            lk = rd.get("link_karma", 0)
+            rows.append(("Karma", f'{rd["total_karma"]:,} total ({lk:,} post | {ck:,} comment)'))
+        if rd.get("subscribers"):
+            rows.append(("Followers", f'{rd["subscribers"]:,}'))
+        badges = []
+        if rd.get("is_employee"):  badges.append("Reddit Employee")
+        if rd.get("is_gold"):      badges.append("Gold")
+        if rd.get("is_mod"):       badges.append("Moderator")
+        if rd.get("is_nsfw"):      badges.append("NSFW")
+        if badges:
+            rows.append(("Badges", " | ".join(badges)))
+        if rd.get("subreddits_posted"):
+            rows.append(("Active Subreddits", ", ".join(f'r/{s}' for s in rd["subreddits_posted"][:20])))
+        if rd.get("icon_img"):
+            clean = rd["icon_img"].split("?")[0]
+            rows.append(("Avatar", f'<a href="{clean}" target="_blank">View image ↗</a>'))
+        html = _table(rows, ["Field", "Value"])
+        if rd.get("security_notes"):
+            html += "<br><strong>⚠ Security Observations:</strong><ul>"
+            html += "".join(f'<li class="warning">{n}</li>' for n in rd["security_notes"])
+            html += "</ul>"
+        if rd.get("recent_posts"):
+            html += "<br><strong>Recent Posts:</strong>"
+            html += '<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%"><tr><th>Date</th><th>Subreddit</th><th>Title</th><th>↑ Score</th><th>💬</th><th>Link</th></tr>'
+            for p in rd["recent_posts"]:
+                nsfw = ' <span class="danger">[NSFW]</span>' if p.get("is_nsfw") else ""
+                html += (f'<tr><td>{p.get("date") or "—"}</td>'
+                         f'<td>r/{p.get("subreddit","?")}</td>'
+                         f'<td>{p["title"]}{nsfw}</td>'
+                         f'<td align="right">{p.get("score",0)}</td>'
+                         f'<td align="right">{p.get("num_comments",0)}</td>'
+                         f'<td><a href="{p["url"]}" target="_blank">View ↗</a></td></tr>')
+            html += "</table>"
+        if rd.get("recent_comments"):
+            html += "<br><strong>Recent Comments:</strong>"
+            html += '<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%"><tr><th>Date</th><th>Subreddit</th><th>Comment</th><th>↑ Score</th><th>Link</th></tr>'
+            for c in rd["recent_comments"]:
+                body = (c.get("body") or "")[:150].replace("<", "&lt;").replace(">", "&gt;")
+                html += (f'<tr><td>{c.get("date") or "—"}</td>'
+                         f'<td>r/{c.get("subreddit","?")}</td>'
+                         f'<td>{body}</td>'
+                         f'<td align="right">{c.get("score",0)}</td>'
+                         f'<td><a href="{c["url"]}" target="_blank">View ↗</a></td></tr>')
+            html += "</table>"
+        if rd.get("dorks"):
+            html += "<br><strong>Investigation Dorks:</strong><ul>"
+            for d in rd["dorks"]:
+                html += f'<li><a href="{d["url"]}" target="_blank">{d["label"]}</a>: <code>{d["query"]}</code></li>'
+            html += "</ul>"
+        sections.append(_section("Reddit Intelligence", html))
+
     # Breach Check
     if "breach" in all_data:
         br = all_data["breach"]
