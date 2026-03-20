@@ -1604,3 +1604,177 @@ def print_reddit_results(data: dict):
         for d in data["dorks"]:
             console.print(f"    [dim]{d['label']}[/dim]: [cyan]{d['query']}[/cyan]")
             console.print(f"      [link={d['url']}][blue]Open in Google ↗[/blue][/link]")
+
+
+# ─── Bot / Fake Account Detection ────────────────────────────────────────────
+
+def detect_suspicious_account(profile: dict, platform: str = "unknown") -> dict:
+    """
+    Phân tích các dấu hiệu tài khoản giả/bot dựa trên metadata profile.
+
+    Args:
+        profile:  Dict chứa profile data (từ bất kỳ platform nào)
+        platform: Tên nền tảng (để tùy chỉnh phân tích)
+
+    Returns dict:
+        suspicion_score: 0-100 (0=bình thường, 100=rất đáng ngờ)
+        risk_level: CLEAN / LOW / MEDIUM / HIGH / SUSPICIOUS
+        indicators: danh sách dấu hiệu bất thường phát hiện được
+        positive_signals: dấu hiệu cho thấy tài khoản thật
+    """
+    indicators = []
+    positive_signals = []
+    score = 0
+
+    username = str(profile.get("username") or profile.get("name") or "")
+    followers = profile.get("followers") or profile.get("follower_count") or 0
+    following = profile.get("following") or profile.get("following_count") or 0
+    bio = profile.get("bio") or profile.get("description") or profile.get("about") or ""
+    verified = profile.get("verified") or False
+    post_count = profile.get("post_count") or profile.get("video_count") or profile.get("tweet_count") or 0
+    created_at = profile.get("created_at") or profile.get("joined") or None
+
+    try:
+        followers = int(followers)
+        following = int(following)
+        post_count = int(post_count)
+    except (ValueError, TypeError):
+        followers = following = post_count = 0
+
+    # Username analysis
+    if username:
+        if re.match(r'^[a-z]{2,6}[0-9]{4,}$', username.lower()):
+            score += 15
+            indicators.append(f"Username pattern ngẫu nhiên: '{username}' (chữ + nhiều số)")
+        if len(username) > 20 and sum(1 for c in username if c.isdigit()) > 5:
+            score += 10
+            indicators.append(f"Username quá dài với nhiều số ({len(username)} ký tự)")
+
+    # Follower/Following ratio
+    if following > 0:
+        ratio = followers / following
+        if following > 5000 and followers < 100:
+            score += 30
+            indicators.append(
+                f"Following rất cao ({following:,}) nhưng follower thấp ({followers:,}) — dấu hiệu follow spam"
+            )
+        elif following > 2000 and ratio < 0.1:
+            score += 20
+            indicators.append(f"Tỷ lệ follower/following thấp ({ratio:.2f}) — có thể mua follower hoặc bot")
+        elif ratio > 100 and followers > 100000:
+            positive_signals.append(f"Tỷ lệ follower/following cao ({ratio:.0f}x) — dấu hiệu tài khoản uy tín")
+
+    # Bio analysis
+    if not bio or len(bio.strip()) == 0:
+        score += 10
+        indicators.append("Bio trống — tài khoản thiếu thông tin cá nhân")
+    elif len(bio) < 10:
+        score += 5
+        indicators.append(f"Bio quá ngắn ('{bio}')")
+    else:
+        positive_signals.append("Có bio đầy đủ")
+
+    # Verification status
+    if verified:
+        score -= 20
+        positive_signals.append("Tài khoản đã được xác minh (verified badge)")
+
+    # Post count vs followers
+    if post_count == 0 and followers > 1000:
+        score += 25
+        indicators.append(f"Không có bài đăng nhưng có {followers:,} followers — dấu hiệu mua follower")
+    elif post_count > 0 and followers > 0:
+        posts_per_follower = followers / post_count
+        if posts_per_follower > 10000:
+            score += 15
+            indicators.append(
+                f"Tỷ lệ follower/post bất thường ({posts_per_follower:.0f}/post) — có thể fake followers"
+            )
+
+    # Profile picture
+    profile_pic = (
+        profile.get("profile_picture") or profile.get("avatar") or
+        profile.get("profile_image_url") or profile.get("thumbnail") or ""
+    )
+    if not profile_pic:
+        score += 10
+        indicators.append("Không có ảnh đại diện")
+
+    # Account age
+    if created_at:
+        try:
+            if isinstance(created_at, str):
+                for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d", "%a %b %d %H:%M:%S %z %Y"):
+                    try:
+                        dt = datetime.strptime(created_at[:25], fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        age_days = (datetime.now(timezone.utc) - dt).days
+                        if age_days < 30:
+                            score += 20
+                            indicators.append(f"Tài khoản mới tạo (chỉ {age_days} ngày trước)")
+                        elif age_days < 180:
+                            score += 5
+                            indicators.append(f"Tài khoản dưới 6 tháng tuổi ({age_days} ngày)")
+                        elif age_days > 730:
+                            positive_signals.append(f"Tài khoản lâu đời ({age_days // 365} năm)")
+                        break
+                    except ValueError:
+                        continue
+        except Exception:
+            pass
+
+    score = max(0, min(100, score))
+
+    if score >= 60:
+        risk_level = "SUSPICIOUS"
+        color = "bold red"
+    elif score >= 40:
+        risk_level = "HIGH"
+        color = "red"
+    elif score >= 20:
+        risk_level = "MEDIUM"
+        color = "yellow"
+    elif score > 0:
+        risk_level = "LOW"
+        color = "cyan"
+    else:
+        risk_level = "CLEAN"
+        color = "green"
+
+    return {
+        "platform": platform,
+        "suspicion_score": score,
+        "risk_level": risk_level,
+        "color": color,
+        "indicators": indicators,
+        "positive_signals": positive_signals,
+    }
+
+
+def print_account_analysis(analysis: dict):
+    """Hiển thị kết quả phân tích bot/fake account."""
+    score = analysis.get("suspicion_score", 0)
+    risk = analysis.get("risk_level", "UNKNOWN")
+    color = analysis.get("color", "white")
+    platform = analysis.get("platform", "")
+
+    label = f"[{platform}] " if platform and platform != "unknown" else ""
+    console.print(f"\n  [bold]🔍 {label}Bot/Fake Account Analysis:[/bold]")
+    console.print(f"  Suspicion Score: [{color}]{score}/100 — {risk}[/{color}]")
+
+    indicators = analysis.get("indicators", [])
+    positives = analysis.get("positive_signals", [])
+
+    if indicators:
+        console.print("  [bold yellow]Dấu hiệu đáng ngờ:[/bold yellow]")
+        for ind in indicators:
+            console.print(f"    [yellow]⚠ {ind}[/yellow]")
+
+    if positives:
+        console.print("  [bold green]Tín hiệu tích cực:[/bold green]")
+        for pos in positives:
+            console.print(f"    [green]✓ {pos}[/green]")
+
+    if not indicators and not positives:
+        console.print("  [dim]Không đủ dữ liệu để phân tích[/dim]")

@@ -26,13 +26,21 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from modules.whois_lookup import whois_lookup, dns_enum, resolve_ip, print_whois, print_dns, subdomain_enum, print_subdomains
+from modules.whois_lookup import (
+    whois_lookup, dns_enum, resolve_ip, print_whois, print_dns,
+    subdomain_enum, print_subdomains,
+    check_email_security, print_email_security,
+    test_zone_transfer, print_zone_transfer,
+)
 from modules.email_recon import email_recon, print_email_results, validate_email
 from modules.username_search import username_search, print_username_results
 from modules.ip_lookup import ip_lookup, print_ip_results
 from modules.phone_lookup import phone_lookup, print_phone_results
 from modules.google_dorks import generate_dorks, print_dorks
 from modules.report import save_report
+from modules.ssl_analyzer import ssl_analyze, print_ssl_results
+from modules.secrets_scanner import secrets_scan, print_secrets_results
+from modules.cloud_recon import cloud_recon, print_cloud_recon
 
 console = Console()
 
@@ -111,13 +119,19 @@ def cli():
 @click.option("--subdomain/--no-subdomain", "do_subdomain", default=True, help="Subdomain enumeration")
 @click.option("--dorks/--no-dorks", "do_dorks", default=True, help="Google dorks")
 @click.option("--ip/--no-ip", "do_ip", default=True, help="IP intelligence")
+@click.option("--ssl/--no-ssl", "do_ssl", default=True, help="SSL/TLS analysis")
+@click.option("--email-sec/--no-email-sec", "do_email_sec", default=True, help="SPF/DKIM/DMARC + zone transfer")
+@click.option("--secrets/--no-secrets", "do_secrets", default=False, help="Scan for exposed files/secrets")
+@click.option("--cloud/--no-cloud", "do_cloud", default=False, help="Cloud bucket enumeration")
 @click.option("--report", is_flag=True, help="Save HTML+JSON+CSV report")
 @click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
 @click.option("--output-format", "out_fmt", type=click.Choice(["table", "json", "csv"]), default="table", help="Output format")
-def cmd_domain(target, targets_file, do_whois, do_dns, do_subdomain, do_dorks, do_ip, report, output, out_fmt):
+def cmd_domain(target, targets_file, do_whois, do_dns, do_subdomain, do_dorks, do_ip,
+               do_ssl, do_email_sec, do_secrets, do_cloud, report, output, out_fmt):
     """Investigate a domain or IP address.
 
     Example: python osint.py domain example.com --report
+    Example: python osint.py domain example.com --secrets --cloud --report
     Example: python osint.py domain --targets domains.txt --report
     """
     targets = _load_targets(target, targets_file, "domain")
@@ -126,18 +140,23 @@ def cmd_domain(target, targets_file, do_whois, do_dns, do_subdomain, do_dorks, d
         raise SystemExit(1)
 
     for t in targets:
-        _run_domain(t, do_whois, do_dns, do_subdomain, do_dorks, do_ip, report, output, out_fmt)
+        _run_domain(t, do_whois, do_dns, do_subdomain, do_dorks, do_ip,
+                    do_ssl, do_email_sec, do_secrets, do_cloud, report, output, out_fmt)
 
 
-def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip, report, output, out_fmt="table"):
+def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip,
+                do_ssl=True, do_email_sec=True, do_secrets=False, do_cloud=False,
+                report=False, output=".", out_fmt="table"):
     """Core domain scan logic (reusable for single and batch)."""
     target = _normalize_target(target)
     if not _is_valid_target(target):
         console.print(f"[red]✗ Invalid domain or IP address: '{target}'[/red]")
         return
+    is_ip_target = all(c.isdigit() or c == "." for c in target)
+
     if out_fmt == "table":
         print_banner()
-        
+
     console.print(f"\n[bold]Target:[/bold] [green]{target}[/green]\n")
 
     all_data = {}
@@ -158,6 +177,22 @@ def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip, report,
         if out_fmt == "table":
             print_dns(data)
 
+    # Email security (SPF/DKIM/DMARC + Zone Transfer) — only for domains, not IPs
+    if do_email_sec and not is_ip_target:
+        if out_fmt == "table":
+            console.print("[dim]Checking email security (SPF/DKIM/DMARC)...[/dim]")
+        email_sec_data = check_email_security(target)
+        all_data["email_security"] = email_sec_data
+        if out_fmt == "table":
+            print_email_security(email_sec_data)
+
+        if out_fmt == "table":
+            console.print("[dim]Testing zone transfer (AXFR)...[/dim]")
+        zt_data = test_zone_transfer(target)
+        all_data["zone_transfer"] = zt_data
+        if out_fmt == "table":
+            print_zone_transfer(zt_data)
+
     if do_subdomain:
         if out_fmt == "table":
             console.print("[dim]Enumerating subdomains...[/dim]")
@@ -165,6 +200,15 @@ def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip, report,
         all_data["subdomains"] = data
         if out_fmt == "table":
             print_subdomains(data)
+
+    # SSL/TLS analysis — only for domains, not IPs
+    if do_ssl and not is_ip_target:
+        if out_fmt == "table":
+            console.print("[dim]Analyzing SSL/TLS...[/dim]")
+        ssl_data = ssl_analyze(target)
+        all_data["ssl"] = ssl_data
+        if out_fmt == "table":
+            print_ssl_results(ssl_data)
 
     if do_ip:
         if out_fmt == "table":
@@ -178,6 +222,22 @@ def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip, report,
         all_data["ip"] = data
         if out_fmt == "table":
             print_ip_results(data)
+
+    if do_secrets:
+        if out_fmt == "table":
+            console.print("[dim]Scanning for exposed files and secrets...[/dim]")
+        secrets_data = secrets_scan(target)
+        all_data["secrets"] = secrets_data
+        if out_fmt == "table":
+            print_secrets_results(secrets_data)
+
+    if do_cloud:
+        if out_fmt == "table":
+            console.print("[dim]Enumerating cloud storage buckets...[/dim]")
+        cloud_data = cloud_recon(target)
+        all_data["cloud"] = cloud_data
+        if out_fmt == "table":
+            print_cloud_recon(cloud_data)
 
     if do_dorks:
         dorks = generate_dorks(target, "domain")
@@ -315,6 +375,75 @@ def cmd_person(name, do_dorks, report, output):
         save_report(name, all_data, output)
 
 
+@cli.command("ssl")
+@click.argument("target")
+@click.option("--port", default=443, show_default=True, help="HTTPS port")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
+def cmd_ssl(target, port, report, output):
+    """Analyze SSL/TLS security of a domain (grade A+ to F).
+
+    \b
+    Examples:
+      python osint.py ssl example.com
+      python osint.py ssl example.com --port 8443
+      python osint.py ssl example.com --report
+    """
+    print_banner()
+    target = _normalize_target(target)
+    console.print(f"[dim]Analyzing SSL/TLS for {target}:{port}...[/dim]")
+    data = ssl_analyze(target, port=port)
+    print_ssl_results(data)
+    if report:
+        save_report(target, {"ssl": data}, output)
+
+
+@cli.command("secrets")
+@click.argument("target")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
+def cmd_secrets(target, report, output):
+    """Scan website for exposed files, credentials, and secrets.
+
+    Scans for: .git directory, .env files, backup files,
+    security.txt, sensitive paths, API keys in source.
+
+    \b
+    Examples:
+      python osint.py secrets example.com
+      python osint.py secrets https://example.com --report
+    """
+    print_banner()
+    console.print(f"[dim]Scanning {target} for exposed files...[/dim]")
+    data = secrets_scan(target)
+    print_secrets_results(data)
+    if report:
+        save_report(target, {"secrets": data}, output)
+
+
+@cli.command("cloud")
+@click.argument("target")
+@click.option("--max-buckets", "max_buckets", default=30, show_default=True,
+              help="Max bucket name variations to test")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
+def cmd_cloud(target, max_buckets, report, output):
+    """Enumerate public cloud storage buckets (AWS S3, GCS, Azure, DO Spaces).
+
+    \b
+    Examples:
+      python osint.py cloud example.com
+      python osint.py cloud mycompany --max-buckets 50
+      python osint.py cloud example.com --report
+    """
+    print_banner()
+    console.print(f"[dim]Enumerating cloud buckets for {target}...[/dim]")
+    data = cloud_recon(target, max_buckets=max_buckets)
+    print_cloud_recon(data)
+    if report:
+        save_report(target, {"cloud": data}, output)
+
+
 @cli.command("breach")
 @click.argument("target")
 @click.option("--password", default=None, metavar="PASSWORD",
@@ -383,6 +512,7 @@ def cmd_social(fb_id, tt_user, ig_user, tw_user, reddit_user, report, output):
         facebook_recon, tiktok_recon, print_facebook_results, print_tiktok_results,
         instagram_recon, print_instagram_results, twitter_recon, print_twitter_results,
         reddit_recon, print_reddit_results,
+        detect_suspicious_account, print_account_analysis,
     )
 
     if not fb_id and not tt_user and not ig_user and not tw_user and not reddit_user:
@@ -397,6 +527,9 @@ def cmd_social(fb_id, tt_user, ig_user, tw_user, reddit_user, report, output):
         fb_data = facebook_recon(fb_id, fb_scraper_key=os.getenv("FACEBOOK_SCRAPER_KEY"))
         all_data["facebook"] = fb_data
         print_facebook_results(fb_data)
+        analysis = detect_suspicious_account(fb_data, platform="Facebook")
+        all_data["facebook_analysis"] = analysis
+        print_account_analysis(analysis)
 
     if tt_user:
         console.print("[dim]Fetching TikTok profile...[/dim]")
@@ -407,24 +540,36 @@ def cmd_social(fb_id, tt_user, ig_user, tw_user, reddit_user, report, output):
         )
         all_data["tiktok"] = tt_data
         print_tiktok_results(tt_data)
+        analysis = detect_suspicious_account(tt_data, platform="TikTok")
+        all_data["tiktok_analysis"] = analysis
+        print_account_analysis(analysis)
 
     if ig_user:
         console.print("[dim]Fetching Instagram profile...[/dim]")
         ig_data = instagram_recon(ig_user, api_key=os.getenv("INSTAGRAM_KEY"))
         all_data["instagram"] = ig_data
         print_instagram_results(ig_data)
+        analysis = detect_suspicious_account(ig_data, platform="Instagram")
+        all_data["instagram_analysis"] = analysis
+        print_account_analysis(analysis)
 
     if tw_user:
         console.print("[dim]Fetching Twitter/X profile...[/dim]")
         tw_data = twitter_recon(tw_user, bearer_token=os.getenv("TWITTER_BEARER_TOKEN"))
         all_data["twitter"] = tw_data
         print_twitter_results(tw_data)
+        analysis = detect_suspicious_account(tw_data, platform="Twitter/X")
+        all_data["twitter_analysis"] = analysis
+        print_account_analysis(analysis)
 
     if reddit_user:
         console.print("[dim]Fetching Reddit profile...[/dim]")
         reddit_data = reddit_recon(reddit_user)
         all_data["reddit"] = reddit_data
         print_reddit_results(reddit_data)
+        analysis = detect_suspicious_account(reddit_data, platform="Reddit")
+        all_data["reddit_analysis"] = analysis
+        print_account_analysis(analysis)
 
     if report:
         identifier = fb_id or tt_user or ig_user or tw_user or reddit_user
@@ -510,22 +655,13 @@ def cmd_full(target, target_type, hibp_key, region, output):  # region kept for 
     all_data = {}
 
     if target_type == "domain":
-        all_data["whois"] = whois_lookup(target)
-        print_whois(all_data["whois"])
-        all_data["dns"] = dns_enum(target)
-        print_dns(all_data["dns"])
-        console.print("[dim]Enumerating subdomains...[/dim]")
-        all_data["subdomains"] = subdomain_enum(target)
-        print_subdomains(all_data["subdomains"])
-        all_data["ip"] = ip_lookup(
+        _run_domain(
             target,
-            virustotal_key=os.getenv("VIRUSTOTAL_KEY"),
-            shodan_key=os.getenv("SHODAN_KEY"),
-            abuseipdb_key=os.getenv("ABUSEIPDB_KEY"),
+            do_whois=True, do_dns=True, do_subdomain=True, do_dorks=True, do_ip=True,
+            do_ssl=True, do_email_sec=True, do_secrets=True, do_cloud=True,
+            report=True, output=output, out_fmt="table",
         )
-        print_ip_results(all_data["ip"])
-        all_data["dorks"] = generate_dorks(target, "domain")
-        print_dorks(target, "domain")
+        return  # _run_domain handles save_report internally
 
     elif target_type == "email":
         all_data["email"] = email_recon(

@@ -16,14 +16,38 @@ pip install -r requirements.txt
 
 ## Sử dụng
 
-### 1. Điều tra Domain / IP
+### 1. Điều tra Domain / IP (đầy đủ nhất)
 ```bash
+# Cơ bản (tự động chạy WHOIS + DNS + SSL + SPF/DMARC + subdomains + IP)
 python osint.py domain example.com
-python osint.py domain 1.2.3.4 --report
-python osint.py domain example.com --no-dorks --report --output ./reports
+
+# Đầy đủ bao gồm quét file nhạy cảm và cloud buckets
+python osint.py domain example.com --secrets --cloud --report
+
+# Tắt bớt module để chạy nhanh hơn
+python osint.py domain example.com --no-subdomain --no-dorks --report --output ./reports
 ```
 
-### 2. Điều tra Email
+### 2. Phân tích SSL/TLS
+```bash
+python osint.py ssl example.com
+python osint.py ssl example.com --port 8443 --report
+```
+
+### 3. Quét file nhạy cảm bị lộ
+```bash
+# Kiểm tra .git, .env, backup files, API keys, security.txt
+python osint.py secrets example.com
+python osint.py secrets https://example.com --report
+```
+
+### 4. Liệt kê Cloud Storage Buckets
+```bash
+python osint.py cloud example.com
+python osint.py cloud mycompany --max-buckets 50 --report
+```
+
+### 5. Điều tra Email
 ```bash
 python osint.py email user@example.com
 python osint.py email user@example.com --hibp-key YOUR_KEY --report
@@ -32,24 +56,38 @@ python osint.py email user@example.com --hibp-key YOUR_KEY --report
 # export HIBP_API_KEY=your_key  (Linux/Mac)
 ```
 
-### 3. Tìm Username trên 30+ nền tảng
+### 6. Kiểm tra Data Breach
+```bash
+python osint.py breach user@example.com
+python osint.py breach user@example.com --password "mypassword"
+python osint.py breach johndoe --report
+```
+
+### 7. Tìm Username trên 40+ nền tảng
 ```bash
 python osint.py username johndoe
 python osint.py username johndoe --report
 ```
 
-### 4. Phân tích số điện thoại
+### 8. Phân tích số điện thoại
 ```bash
 python osint.py phone +84901234567
 python osint.py phone 0901234567 --region VN --report
 ```
 
-### 5. Dorks cho cá nhân / tổ chức
+### 9. Điều tra Social Media (kèm Bot Detection)
+```bash
+python osint.py social --facebook johndoe
+python osint.py social --tiktok johndoe --twitter johndoe --report
+python osint.py social --reddit johndoe
+```
+
+### 10. Dorks cho cá nhân / tổ chức
 ```bash
 python osint.py person "Nguyen Van A" --report
 ```
 
-### 6. Full scan (tất cả modules + xuất báo cáo)
+### 11. Full scan (tất cả modules + xuất báo cáo)
 ```bash
 python osint.py full example.com --type domain --output ./reports
 python osint.py full user@example.com --type email --hibp-key KEY
@@ -64,12 +102,19 @@ python osint.py full "Nguyen Van A" --type person
 
 | Module | Chức năng | Nguồn dữ liệu |
 |--------|-----------|---------------|
-| `whois_lookup.py` | WHOIS + DNS Enumeration | python-whois, dnspython |
-| `email_recon.py` | Email recon, breach check, Gravatar | HIBP API (free key), Gravatar |
-| `username_search.py` | Username trên 30+ platform | Public profile URLs |
-| `ip_lookup.py` | Geo, ASN, Reverse IP, HTTP fingerprint | ip-api.com (free), HackerTarget |
+| `whois_lookup.py` | WHOIS + DNS + SPF/DKIM/DMARC + Zone Transfer test | python-whois, dnspython |
+| `ssl_analyzer.py` | SSL/TLS analysis — grade A+ đến F, cipher, cert, HSTS | ssl (built-in) |
+| `secrets_scanner.py` | Exposed files scanner — .git, .env, backup, API keys | requests (free) |
+| `cloud_recon.py` | Cloud bucket enum — AWS S3, GCS, Azure, DO Spaces | requests (free) |
+| `email_recon.py` | Email recon, breach check, Gravatar | HIBP API, Gravatar |
+| `username_search.py` | Username trên 40+ platform | Public profile URLs |
+| `ip_lookup.py` | Geo, ASN, RDAP, Reverse IP, CVE table, HTTP headers | ip-api.com (free), RDAP (free) |
 | `phone_lookup.py` | Phân tích số điện thoại | phonenumbers (offline) |
 | `google_dorks.py` | Google Dork queries | Tạo link tìm kiếm |
+| `breach_check.py` | Breach check + severity scoring (CRITICAL/HIGH/MEDIUM/LOW) | LeakCheck, HIBP, BreachDirectory |
+| `social_recon.py` | Social media recon + Bot/Fake account detection | Public APIs |
+| `website_contacts.py` | Email, phone, social links từ website | RapidAPI |
+| `youtube_recon.py` | YouTube channel OSINT | RapidAPI |
 | `report.py` | Xuất báo cáo HTML + JSON | — |
 
 ---
@@ -80,22 +125,10 @@ python osint.py full "Nguyen Van A" --type person
 |---------|-------------|----------|--------------|
 | HaveIBeenPwned | https://haveibeenpwned.com/API/Key | Email breach check | $3.50/tháng |
 | NumVerify | https://numverify.com | Phone validation | 100 req/tháng |
-
----
-
-## Đánh giá nhanh & đề xuất cải tiến
-
-Sau khi rà soát codebase hiện tại, đây là các cải tiến nên ưu tiên:
-
-1. **Bổ sung test tự động cơ bản** cho các nhánh CLI quan trọng như `domain`, `email`, `phone` và `report` để tránh hồi quy.
-2. **Chuẩn hóa HTTP client** dùng chung timeout, retry và xử lý lỗi thay vì để từng module tự gọi `requests.get(...)`.
-3. **Tách nhỏ `modules/report.py` và `modules/social_recon.py`** vì đây là hai file lớn, đang ôm nhiều trách nhiệm nên khó bảo trì.
-4. **Bổ sung logging mức debug** cho các API/public source bị lỗi để người dùng hiểu vì sao dữ liệu thiếu hoặc trả về `"N/A"`.
-5. **Thêm cache/rate-limit** cho các nguồn public như `ip-api`, `crt.sh` hoặc endpoint tra cứu profile để giảm timeout và giới hạn truy cập.
-
-### Cải tiến đã áp dụng trong lần rà soát này
-
-- Siết chặt kiểm tra IPv4 trong CLI: tool không còn chấp nhận các địa chỉ không hợp lệ như `999.999.999.999`.
+| Shodan | https://shodan.io | Open ports, CVEs | Free tier (100 req/tháng) |
+| VirusTotal | https://virustotal.com | Malware/threat intel | 1000 req/ngày |
+| AbuseIPDB | https://abuseipdb.com | IP abuse reputation | 1000 req/ngày |
+| BreachDirectory | https://rapidapi.com/rohan-patra/api/breachdirectory | Breach database | 100 req/tháng |
 
 ---
 
@@ -107,14 +140,17 @@ OSINT-Tool/
 ├── requirements.txt
 ├── README.md
 └── modules/
-    ├── breach_check.py
-    ├── whois_lookup.py
+    ├── ssl_analyzer.py       # ✨ MỚI: SSL/TLS analysis
+    ├── secrets_scanner.py    # ✨ MỚI: Exposed files/secrets scanner
+    ├── cloud_recon.py        # ✨ MỚI: Cloud bucket enumeration
+    ├── whois_lookup.py       # ✨ MỞ RỘNG: + SPF/DKIM/DMARC + Zone Transfer
+    ├── ip_lookup.py          # ✨ MỞ RỘNG: + RDAP + CVE severity table
+    ├── breach_check.py       # ✨ MỞ RỘNG: + Breach severity scoring
+    ├── social_recon.py       # ✨ MỞ RỘNG: + Bot/Fake account detection
     ├── email_recon.py
     ├── username_search.py
-    ├── ip_lookup.py
     ├── phone_lookup.py
     ├── google_dorks.py
-    ├── social_recon.py
     ├── website_contacts.py
     ├── youtube_recon.py
     └── report.py
