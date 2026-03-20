@@ -341,15 +341,28 @@ def build_html_report(target: str, all_data: dict) -> str:
             ("Status", f'<span class="{status_cls}">{status_label}</span>'),
         ]
         if tt.get("display_name"):
-            rows.append(("Display Name", f'<strong>{tt["display_name"]}</strong>'))
+            verified_badge = ' <span style="color:#f5a623">✓ Verified</span>' if tt.get("is_verified") else ""
+            rows.append(("Display Name", f'<strong>{tt["display_name"]}</strong>{verified_badge}'))
         if tt.get("bio"):
             rows.append(("Bio", tt["bio"][:200]))
-        if tt.get("follower_count"):
-            rows.append(("Followers", tt["follower_count"]))
-        if tt.get("video_count"):
-            rows.append(("Videos", tt["video_count"]))
+        if tt.get("region"):
+            rows.append(("Region", tt["region"]))
+        if tt.get("follower_count") is not None:
+            fc = tt["follower_count"]
+            rows.append(("Followers", f"{fc:,}" if isinstance(fc, int) else str(fc)))
+        if tt.get("following_count") is not None:
+            fw = tt["following_count"]
+            rows.append(("Following", f"{fw:,}" if isinstance(fw, int) else str(fw)))
+        if tt.get("likes_count") is not None:
+            lc = tt["likes_count"]
+            rows.append(("Total Likes", f"{lc:,}" if isinstance(lc, int) else str(lc)))
+        if tt.get("video_count") is not None:
+            vc = tt["video_count"]
+            rows.append(("Videos", f"{vc:,}" if isinstance(vc, int) else str(vc)))
         if tt.get("profile_pic"):
             rows.append(("Profile Picture", f'<a href="{tt["profile_pic"]}" target="_blank">View image ↗</a>'))
+        if tt.get("data_sources"):
+            rows.append(("Data Sources", ", ".join(tt["data_sources"])))
         html = _table(rows, ["Field", "Value"])
         if tt.get("security_notes"):
             html += "<br><strong>⚠ Security Observations:</strong><ul>"
@@ -363,6 +376,59 @@ def build_html_report(target: str, all_data: dict) -> str:
             )
             html += "</ul>"
         sections.append(_section("TikTok Intelligence", html))
+
+    # YouTube
+    if "youtube" in all_data:
+        yt = all_data["youtube"]
+        status_cls = "found" if yt.get("exists") else "danger"
+        status_label = "Found" if yt.get("exists") else "Not Found"
+        rows = [
+            ("Status", f'<span class="{status_cls}">{status_label}</span>'),
+        ]
+        if yt.get("channel_url"):
+            rows.append(("Channel URL", f'<a href="{yt["channel_url"]}" target="_blank">{yt["channel_url"]}</a>'))
+        if yt.get("channel_id"):
+            rows.append(("Channel ID", f'<code>{yt["channel_id"]}</code>'))
+        if yt.get("handle"):
+            rows.append(("Handle", yt["handle"]))
+        if yt.get("title"):
+            verified_badge = ' <span style="color:#f5a623">✓ Verified</span>' if yt.get("verified") else ""
+            rows.append(("Channel Name", f'<strong>{yt["title"]}</strong>{verified_badge}'))
+        if yt.get("country"):
+            rows.append(("Country", yt["country"]))
+        if yt.get("subscriber_count"):
+            rows.append(("Subscribers", str(yt["subscriber_count"])))
+        if yt.get("video_count"):
+            rows.append(("Videos", str(yt["video_count"])))
+        if yt.get("view_count"):
+            rows.append(("Total Views", str(yt["view_count"])))
+        if yt.get("has_business_email"):
+            rows.append(("Business Email", "Yes (see About page)"))
+        if yt.get("description"):
+            rows.append(("Description", yt["description"][:200]))
+        if yt.get("links"):
+            def _yt_link(lnk):
+                href = lnk if lnk.startswith("http") else f"https://{lnk}"
+                return f'<a href="{href}" target="_blank">{lnk}</a>'
+            links_html = " | ".join(_yt_link(lnk) for lnk in yt["links"][:5])
+            rows.append(("Links", links_html))
+        if yt.get("avatar"):
+            rows.append(("Avatar", f'<a href="{yt["avatar"]}" target="_blank">View image ↗</a>'))
+        if yt.get("data_sources"):
+            rows.append(("Data Sources", ", ".join(yt["data_sources"])))
+        html = _table(rows, ["Field", "Value"])
+        if yt.get("security_notes"):
+            html += "<br><strong>⚠ Security Observations:</strong><ul>"
+            html += "".join(f'<li class="warning">{n}</li>' for n in yt["security_notes"])
+            html += "</ul>"
+        if yt.get("dorks"):
+            html += "<br><strong>Investigation Dorks:</strong><ul>"
+            html += "".join(
+                f'<li><a href="{d["url"]}" target="_blank">{d["label"]}</a>: <code>{d["query"]}</code></li>'
+                for d in yt["dorks"]
+            )
+            html += "</ul>"
+        sections.append(_section("YouTube Intelligence", html))
 
     # Dorks
     if "dorks" in all_data:

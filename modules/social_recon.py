@@ -187,9 +187,61 @@ def _try_graph_api(result: dict, identifier: str):
         pass
 
 
+def _try_facebook_scraper3(identifier: str, api_key: str, result: dict):
+    """
+    Enrich facebook_recon result using Facebook Scraper3 RapidAPI.
+    Searches by identifier and cross-references the top results.
+    """
+    try:
+        r = requests.get(
+            "https://facebook-scraper3.p.rapidapi.com/search/pages",
+            params={"query": identifier},
+            headers={
+                "X-RapidAPI-Key": api_key,
+                "X-RapidAPI-Host": "facebook-scraper3.p.rapidapi.com",
+            },
+            timeout=12,
+        )
+        if r.status_code != 200:
+            return
+        items = r.json().get("results", [])
+        if not items:
+            return
+        # Find the best match: profile_url or name contains the identifier
+        match = None
+        ident_lower = identifier.lower()
+        for item in items:
+            url = item.get("profile_url", "").lower()
+            name = item.get("name", "").lower()
+            if ident_lower in url or ident_lower in name:
+                match = item
+                break
+        if match is None:
+            match = items[0]  # Fallback: take top result
+
+        if not result.get("exists"):
+            result["exists"] = True
+        if not result.get("is_public"):
+            result["is_public"] = True
+        if not result.get("display_name"):
+            result["display_name"] = match.get("name")
+        if not result.get("numeric_id") and match.get("facebook_id"):
+            result["numeric_id"] = match["facebook_id"]
+        if result.get("is_verified") is None and match.get("is_verified") is not None:
+            result["is_verified"] = match["is_verified"]
+        img = match.get("image") or {}
+        if not result.get("profile_pic") and img.get("uri"):
+            result["profile_pic"] = img["uri"]
+        if not result.get("profile_url") and match.get("profile_url"):
+            result["profile_url"] = match["profile_url"]
+        result["data_sources"].append("Facebook Scraper3")
+    except Exception:
+        pass
+
+
 # ─── Facebook ────────────────────────────────────────────────────────────────
 
-def facebook_recon(identifier: str) -> dict:
+def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
     """
     Gather public OSINT from a Facebook profile, page, or numeric ID.
 
@@ -197,6 +249,7 @@ def facebook_recon(identifier: str) -> dict:
       1. www.facebook.com with facebookexternalhit/1.1 UA — the ONLY UA that
          Facebook whitelists for returning full OG tags (its link-preview crawler)
       2. graph.facebook.com — public fields for Pages without an access token
+      3. Facebook Scraper3 RapidAPI (optional) — enriches with verified badge, numeric ID, pic
     """
     identifier = _normalize_fb_id(identifier)
     profile_url = (
@@ -324,6 +377,10 @@ def facebook_recon(identifier: str) -> dict:
     # ── Graph API (pages, no access token required) ─────────────────────────
     _try_graph_api(result, identifier)
 
+    # ── Facebook Scraper3 RapidAPI (optional enrichment) ─────────────────
+    if fb_scraper_key:
+        _try_facebook_scraper3(identifier, fb_scraper_key, result)
+
     # ── Infer account type ─────────────────────────────────────────────────
     if not result.get("account_type"):
         if result.get("category"):
@@ -427,10 +484,59 @@ def facebook_recon(identifier: str) -> dict:
 
 # ─── TikTok ──────────────────────────────────────────────────────────────────
 
-def tiktok_recon(username: str) -> dict:
+def _try_tiktok_tokapi(username: str, api_key: str) -> dict | None:
+    """Fetch TikTok profile via TokAPI (tokapi-mobile-version.p.rapidapi.com)."""
+    try:
+        r = requests.get(
+            f"https://tokapi-mobile-version.p.rapidapi.com/v1/user/@{username}",
+            headers={
+                "X-RapidAPI-Key": api_key,
+                "X-RapidAPI-Host": "tokapi-mobile-version.p.rapidapi.com",
+            },
+            timeout=12,
+        )
+        if r.status_code == 200:
+            d = r.json()
+            u = d.get("userInfo", {}).get("user", {})
+            s = d.get("userInfo", {}).get("stats", {})
+            if u or s:
+                return {"user": u, "stats": s}
+    except Exception:
+        pass
+    return None
+
+
+def _try_tiktok_api23(username: str, api_key: str) -> dict | None:
+    """Fetch TikTok profile via TikTok API23 (tiktok-api23.p.rapidapi.com)."""
+    try:
+        r = requests.get(
+            "https://tiktok-api23.p.rapidapi.com/api/user/info",
+            params={"uniqueId": username},
+            headers={
+                "X-RapidAPI-Key": api_key,
+                "X-RapidAPI-Host": "tiktok-api23.p.rapidapi.com",
+            },
+            timeout=12,
+        )
+        if r.status_code == 200:
+            d = r.json()
+            u = d.get("userInfo", {}).get("user", {})
+            s = d.get("userInfo", {}).get("stats", {})
+            if u or s:
+                return {"user": u, "stats": s}
+    except Exception:
+        pass
+    return None
+
+
+def tiktok_recon(
+    username: str,
+    tokapi_key: str | None = None,
+    tiktok_api_key: str | None = None,
+) -> dict:
     """
-    Gather public OSINT from a TikTok profile using the official oEmbed API and
-    Open Graph metadata scraping.
+    Gather public OSINT from a TikTok profile.
+    Source priority: TokAPI → TikTok API23 → oEmbed (public, no key needed).
     """
     username = username.lstrip("@").strip()
     profile_url = f"https://www.tiktok.com/@{username}"
@@ -445,12 +551,46 @@ def tiktok_recon(username: str) -> dict:
         "bio": None,
         "profile_pic": None,
         "follower_count": None,
+        "following_count": None,
+        "likes_count": None,
         "video_count": None,
+        "is_verified": False,
+        "region": None,
+        "data_sources": [],
         "security_notes": [],
         "dorks": [],
     }
 
-    # 1. Official oEmbed API — most reliable, returns display name + profile pic
+    # 1. TokAPI (preferred RapidAPI source)
+    api_data = None
+    if tokapi_key:
+        api_data = _try_tiktok_tokapi(username, tokapi_key)
+        if api_data:
+            result["data_sources"].append("TokAPI")
+
+    # 2. TikTok API23 (fallback RapidAPI source)
+    if not api_data and tiktok_api_key:
+        api_data = _try_tiktok_api23(username, tiktok_api_key)
+        if api_data:
+            result["data_sources"].append("TikTok API23")
+
+    # Parse RapidAPI response fields
+    if api_data:
+        u = api_data.get("user", {})
+        s = api_data.get("stats", {})
+        result["exists"] = True
+        result["is_public"] = True
+        result["display_name"] = u.get("nickname") or None
+        result["bio"] = u.get("signature") or None
+        result["profile_pic"] = u.get("avatarLarger") or None
+        result["is_verified"] = bool(u.get("verified", False))
+        result["region"] = u.get("region") or None
+        result["follower_count"] = s.get("followerCount")
+        result["following_count"] = s.get("followingCount")
+        result["likes_count"] = s.get("heartCount")
+        result["video_count"] = s.get("videoCount")
+
+    # 3. oEmbed API — always attempt; fills gaps when no RapidAPI key is configured
     try:
         oembed = requests.get(
             "https://www.tiktok.com/oembed",
@@ -463,49 +603,19 @@ def tiktok_recon(username: str) -> dict:
             data = oembed.json()
             result["exists"] = True
             result["is_public"] = True
-            result["display_name"] = data.get("author_name")
-            result["profile_pic"] = data.get("thumbnail_url")
+            if not result["display_name"]:
+                result["display_name"] = data.get("author_name")
+            if not result["profile_pic"]:
+                result["profile_pic"] = data.get("thumbnail_url")
+            result["data_sources"].append("oEmbed")
     except Exception:
-        pass  # Fall through to page scrape
-
-    # 2. Open Graph tag scraping (fallback + supplementary bio/stats)
-    try:
-        pg = requests.get(
-            profile_url,
-            headers=HEADERS,
-            timeout=15,
-            verify=True,
-            allow_redirects=True,
-        )
-        if pg.status_code == 200:
-            html = pg.text
-            og = _extract_og(html)
-
-            if og.get("title") and not result["display_name"]:
-                result["display_name"] = og["title"]
-            if og.get("description"):
-                result["bio"] = og["description"][:300]
-            if og.get("image") and not result["profile_pic"]:
-                result["profile_pic"] = og["image"]
-            if og.get("title"):
-                result["exists"] = True
-                result["is_public"] = True
-
-            # Try to extract follower and video counts from OG description
-            desc = og.get("description", "")
-            fans_m = re.search(r"([\d,.KkMm]+)\s*(?:Followers|fans)", desc, re.IGNORECASE)
-            if fans_m:
-                result["follower_count"] = fans_m.group(1)
-            vids_m = re.search(r"([\d,.KkMm]+)\s*(?:videos?|clips?)", desc, re.IGNORECASE)
-            if vids_m:
-                result["video_count"] = vids_m.group(1)
-
-        elif pg.status_code == 404:
-            result["security_notes"].append("TikTok returned 404 — account does not exist.")
-    except Exception as e:
-        result["security_notes"].append(f"Error fetching TikTok page: {e}")
+        pass
 
     # ── Security observations ──────────────────────────────────────────────
+    if not result["data_sources"]:
+        result["security_notes"].append(
+            "No API key configured — only oEmbed used. Add TOKAPI_KEY or TIKTOK_API_KEY to .env for full data."
+        )
     if result["exists"]:
         if not result["profile_pic"]:
             result["security_notes"].append(
@@ -523,7 +633,6 @@ def tiktok_recon(username: str) -> dict:
             result["security_notes"].append(
                 "Username pattern (letters + many numbers/underscores) is typical of bot or auto-generated accounts."
             )
-        # Detect potential impersonation: username contains a known brand with numbers appended
         brand_re = re.compile(r'(facebook|google|apple|tiktok|youtube|shopee|lazada|viettel|vnpay)\d+', re.IGNORECASE)
         if brand_re.search(username):
             result["security_notes"].append(
@@ -642,23 +751,42 @@ def print_tiktok_results(data: dict):
     console.print(f"\n[bold red]═══ TikTok: @{data['username']} ═══[/bold red]")
     console.print(f"  URL          : [cyan]{data['profile_url']}[/cyan]")
     console.print(f"  Status       : {status_text}")
-    if data["display_name"]:
-        console.print(f"  Display Name : [bold white]{data['display_name']}[/bold white]")
-    if data["bio"]:
+    if data.get("display_name"):
+        verified = " [bold yellow]✓ Verified[/bold yellow]" if data.get("is_verified") else ""
+        console.print(f"  Display Name : [bold white]{data['display_name']}[/bold white]{verified}")
+    if data.get("bio"):
         console.print(f"  Bio          : [dim]{data['bio'][:160]}[/dim]")
-    if data["follower_count"]:
-        console.print(f"  Followers    : [cyan]{data['follower_count']}[/cyan]")
-    if data["video_count"]:
-        console.print(f"  Videos       : [cyan]{data['video_count']}[/cyan]")
-    if data["profile_pic"]:
-        console.print(f"  Profile Pic  : [link={data['profile_pic']}][cyan]View image ↗[/cyan][/link]")
+    if data.get("region"):
+        console.print(f"  Region       : {data['region']}")
 
-    if data["security_notes"]:
+    # Stats row
+    stats = []
+    if data.get("follower_count") is not None:
+        fc = data["follower_count"]
+        stats.append(f"[cyan]{fc:,}[/cyan] followers" if isinstance(fc, int) else f"[cyan]{fc}[/cyan] followers")
+    if data.get("following_count") is not None:
+        fwg = data["following_count"]
+        stats.append(f"[cyan]{fwg:,}[/cyan] following" if isinstance(fwg, int) else f"[cyan]{fwg}[/cyan] following")
+    if data.get("likes_count") is not None:
+        lc = data["likes_count"]
+        stats.append(f"[cyan]{lc:,}[/cyan] likes" if isinstance(lc, int) else f"[cyan]{lc}[/cyan] likes")
+    if data.get("video_count") is not None:
+        vc = data["video_count"]
+        stats.append(f"[cyan]{vc:,}[/cyan] videos" if isinstance(vc, int) else f"[cyan]{vc}[/cyan] videos")
+    if stats:
+        console.print(f"  Stats        : {' | '.join(stats)}")
+
+    if data.get("profile_pic"):
+        console.print(f"  Profile Pic  : [link={data['profile_pic']}][cyan]View image ↗[/cyan][/link]")
+    if data.get("data_sources"):
+        console.print(f"  Data Sources : [dim]{', '.join(data['data_sources'])}[/dim]")
+
+    if data.get("security_notes"):
         console.print("\n  [bold yellow]⚠ Security Observations:[/bold yellow]")
         for note in data["security_notes"]:
             console.print(f"    [yellow]• {note}[/yellow]")
 
-    if data["dorks"]:
+    if data.get("dorks"):
         console.print("\n  [bold]Investigation Dorks:[/bold]")
         for d in data["dorks"]:
             console.print(f"    [dim]{d['label']}[/dim]: [cyan]{d['query']}[/cyan]")

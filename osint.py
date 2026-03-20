@@ -349,19 +349,46 @@ def cmd_social(fb_id, tt_user, report, output):
 
     if fb_id:
         console.print("[dim]Fetching Facebook profile...[/dim]")
-        fb_data = facebook_recon(fb_id)
+        fb_data = facebook_recon(fb_id, fb_scraper_key=os.getenv("FACEBOOK_SCRAPER_KEY"))
         all_data["facebook"] = fb_data
         print_facebook_results(fb_data)
 
     if tt_user:
         console.print("[dim]Fetching TikTok profile...[/dim]")
-        tt_data = tiktok_recon(tt_user)
+        tt_data = tiktok_recon(
+            tt_user,
+            tokapi_key=os.getenv("TOKAPI_KEY"),
+            tiktok_api_key=os.getenv("TIKTOK_API_KEY"),
+        )
         all_data["tiktok"] = tt_data
         print_tiktok_results(tt_data)
 
     if report:
         identifier = fb_id or tt_user
         save_report(identifier, all_data, output)
+
+
+@cli.command("youtube")
+@click.argument("channel")
+@click.option("--yt-key", "yt_key", envvar="YOUTUBE_V2_KEY", default=None, help="YouTube V2 RapidAPI key")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
+def cmd_youtube(channel, yt_key, report, output):
+    """Investigate a YouTube channel by handle, channel ID, or URL.
+
+    Examples:
+    \b
+    python osint.py youtube @mrbeast
+    python osint.py youtube UCX6OQ3DkcsbYNE6H8uQQuVA
+    python osint.py youtube https://www.youtube.com/@mkbhd --report
+    """
+    from modules.youtube_recon import youtube_recon, print_youtube_results
+    print_banner()
+    console.print("[dim]Fetching YouTube channel...[/dim]")
+    yt_data = youtube_recon(channel, youtube_v2_key=yt_key or os.getenv("YOUTUBE_V2_KEY"))
+    print_youtube_results(yt_data)
+    if report:
+        save_report(channel, {"youtube": yt_data}, output)
 
 
 @cli.command("full")
@@ -443,15 +470,16 @@ def cmd_menu():
     print_banner()
 
     MENU_ITEMS = [
-        ("1", "Domain / IP Investigation",        "domain"),
-        ("2", "Email Reconnaissance",             "email"),
-        ("3", "Username Search (40+ platforms)",  "username"),
-        ("4", "Phone Number Analysis",            "phone"),
-        ("5", "Person / Organization Dorks",      "person"),
-        ("6", "Social Media Recon (FB / TikTok)", "social"),
-        ("7", "Breach / Data Leak Check",         "breach"),
-        ("8", "Full Scan + Report",               "full"),
-        ("0", "Exit",                             None),
+        ("1", "Domain / IP Investigation",           "domain"),
+        ("2", "Email Reconnaissance",                "email"),
+        ("3", "Username Search (40+ platforms)",     "username"),
+        ("4", "Phone Number Analysis",               "phone"),
+        ("5", "Person / Organization Dorks",         "person"),
+        ("6", "Social Media Recon (FB / TikTok)",    "social"),
+        ("7", "YouTube Channel Recon",               "youtube"),
+        ("8", "Breach / Data Leak Check",            "breach"),
+        ("9", "Full Scan + Report",                  "full"),
+        ("0", "Exit",                                None),
     ]
 
     while True:
@@ -531,16 +559,29 @@ def cmd_menu():
             all_data = {}
             if fb_id:
                 console.print("[dim]Fetching Facebook profile...[/dim]")
-                fb_data = facebook_recon(fb_id)
+                fb_data = facebook_recon(fb_id, fb_scraper_key=os.getenv("FACEBOOK_SCRAPER_KEY"))
                 all_data["facebook"] = fb_data
                 print_facebook_results(fb_data)
             if tt_user:
                 console.print("[dim]Fetching TikTok profile...[/dim]")
-                tt_data = tiktok_recon(tt_user)
+                tt_data = tiktok_recon(
+                    tt_user,
+                    tokapi_key=os.getenv("TOKAPI_KEY"),
+                    tiktok_api_key=os.getenv("TIKTOK_API_KEY"),
+                )
                 all_data["tiktok"] = tt_data
                 print_tiktok_results(tt_data)
             if do_report:
                 save_report(fb_id or tt_user, all_data, output_dir)
+
+        elif mode == "youtube":
+            from modules.youtube_recon import youtube_recon, print_youtube_results
+            channel = Prompt.ask("YouTube handle, channel ID, or URL")
+            console.print("[dim]Fetching YouTube channel...[/dim]")
+            yt_data = youtube_recon(channel, youtube_v2_key=os.getenv("YOUTUBE_V2_KEY"))
+            print_youtube_results(yt_data)
+            if do_report:
+                save_report(channel, {"youtube": yt_data}, output_dir)
 
         elif mode == "breach":
             from modules.breach_check import breach_check, print_breach_results
