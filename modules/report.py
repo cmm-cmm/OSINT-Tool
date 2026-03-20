@@ -202,6 +202,8 @@ def build_html_report(target: str, all_data: dict) -> str:
 
         if fb.get("location"):
             rows.append(("Location", fb["location"]))
+        if fb.get("address"):
+            rows.append(("Address", fb["address"]))
         if fb.get("hometown"):
             rows.append(("Hometown", fb["hometown"]))
         if fb.get("work_education"):
@@ -231,6 +233,30 @@ def build_html_report(target: str, all_data: dict) -> str:
             html += "<br><strong>⚠ Security Observations:</strong><ul>"
             html += "".join(f'<li class="warning">{n}</li>' for n in fb["security_notes"])
             html += "</ul>"
+        if fb.get("recent_posts"):
+            avg = fb.get("avg_engagement")
+            avg_str = f" &nbsp;<small>(avg engagement: {avg:,})</small>" if avg else ""
+            html += f"<br><strong>Recent Posts{avg_str}:</strong>"
+            html += (
+                '<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%">'
+                '<tr><th>Date</th><th>Type</th><th>Message</th><th>❤ Reactions</th><th>💬 Comments</th><th>Shares</th><th>Link</th></tr>'
+            )
+            for p in fb["recent_posts"]:
+                msg = (p.get("message") or "—")[:120]
+                link = f'<a href="{p["url"]}" target="_blank">View ↗</a>' if p.get("url") else "—"
+                author = f' <small>({p["author_name"]})</small>' if p.get("author_name") else ""
+                html += (
+                    f'<tr>'
+                    f'<td>{p.get("date") or "—"}</td>'
+                    f'<td>{p.get("type") or "post"}</td>'
+                    f'<td>{msg}{author}</td>'
+                    f'<td align="right">{p.get("reactions", 0)}</td>'
+                    f'<td align="right">{p.get("comments", 0)}</td>'
+                    f'<td align="right">{p.get("shares", 0)}</td>'
+                    f'<td>{link}</td>'
+                    f'</tr>'
+                )
+            html += "</table>"
         if fb.get("dorks"):
             html += "<br><strong>Investigation Dorks:</strong><ul>"
             html += "".join(

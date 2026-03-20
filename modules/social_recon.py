@@ -234,7 +234,174 @@ def _try_facebook_scraper3(identifier: str, api_key: str, result: dict):
             result["profile_pic"] = img["uri"]
         if not result.get("profile_url") and match.get("profile_url"):
             result["profile_url"] = match["profile_url"]
-        result["data_sources"].append("Facebook Scraper3")
+        result["data_sources"].append("Facebook Scraper3 (pages)")
+    except Exception:
+        pass
+
+
+def _try_facebook_scraper3_people(identifier: str, api_key: str, result: dict):
+    """
+    Search Facebook personal profiles via /search/people.
+    Fills the gap when /search/pages misses personal profiles.
+    Only enriches if a strong URL/name match is found.
+    """
+    try:
+        r = requests.get(
+            "https://facebook-scraper3.p.rapidapi.com/search/people",
+            params={"query": identifier},
+            headers={
+                "X-RapidAPI-Key": api_key,
+                "X-RapidAPI-Host": "facebook-scraper3.p.rapidapi.com",
+            },
+            timeout=12,
+        )
+        if r.status_code != 200:
+            return
+        items = r.json().get("results", [])
+        if not items:
+            return
+        # Require a strong URL or name match — people search is noisy
+        match = None
+        ident_lower = identifier.lower()
+        for item in items:
+            url = item.get("url", "").lower()
+            name = item.get("name", "").lower()
+            if ident_lower in url or ident_lower in name:
+                match = item
+                break
+        if match is None:
+            return
+        if not result.get("exists"):
+            result["exists"] = True
+        if not result.get("is_public"):
+            result["is_public"] = True
+        if not result.get("display_name"):
+            result["display_name"] = match.get("name")
+        pid = str(match.get("profile_id", ""))
+        if not result.get("numeric_id") and pid.isdigit():
+            result["numeric_id"] = pid
+        if not result.get("profile_url") and match.get("url"):
+            result["profile_url"] = match["url"]
+        pp = match.get("profile_picture") or {}
+        if not result.get("profile_pic") and pp.get("uri"):
+            result["profile_pic"] = pp["uri"]
+        # Only assert Personal Profile if the /search/pages lookup didn't already find this entity
+        if not result.get("account_type") and "Facebook Scraper3 (pages)" not in result["data_sources"]:
+            result["account_type"] = "Personal Profile"
+        if result.get("is_verified") is None and match.get("is_verified") is not None:
+            result["is_verified"] = match["is_verified"]
+        result["data_sources"].append("Facebook Scraper3 (people)")
+    except Exception:
+        pass
+
+
+def _try_facebook_scraper3_posts(identifier: str, api_key: str, result: dict):
+    """
+    Fetch the 5 most recent posts from a Facebook Page using /page/posts.
+    Requires a numeric page ID in result["numeric_id"].
+    Also computes avg_engagement across fetched posts.
+    """
+    page_id = result.get("numeric_id")
+    if not page_id or not str(page_id).isdigit():
+        return
+    try:
+        r = requests.get(
+            "https://facebook-scraper3.p.rapidapi.com/page/posts",
+            params={"page_id": page_id, "count": 5},
+            headers={
+                "X-RapidAPI-Key": api_key,
+                "X-RapidAPI-Host": "facebook-scraper3.p.rapidapi.com",
+            },
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return
+        posts_raw = r.json().get("results", [])
+        if not posts_raw:
+            return
+        import datetime
+        result["recent_posts"] = []
+        total_reactions = 0
+        total_comments = 0
+        for p in posts_raw:
+            ts = p.get("timestamp")
+            date_str = (
+                datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                if ts else None
+            )
+            post = {
+                "url": p.get("url"),
+                "message": (p.get("message") or "")[:200],
+                "date": date_str,
+                "reactions": p.get("reactions_count", 0) or 0,
+                "comments": p.get("comments_count", 0) or 0,
+                "shares": p.get("reshare_count", 0) or 0,
+                "type": p.get("type", "post"),
+            }
+            result["recent_posts"].append(post)
+            total_reactions += post["reactions"]
+            total_comments += post["comments"]
+        n = len(result["recent_posts"])
+        if n:
+            result["avg_engagement"] = round((total_reactions + total_comments) / n)
+            result["data_sources"].append(f"Facebook Scraper3 (page posts: {n})")
+    except Exception:
+        pass
+
+
+def _try_facebook_scraper3_search_posts(identifier: str, api_key: str, result: dict):
+    """
+    Search for public posts mentioning this identifier/name via /search/posts.
+    Useful when the target is a person whose posts aren't accessible via /page/posts.
+    Stores up to 5 representative recent posts.
+    """
+    query = result.get("display_name") or identifier
+    try:
+        r = requests.get(
+            "https://facebook-scraper3.p.rapidapi.com/search/posts",
+            params={"query": query, "count": 5},
+            headers={
+                "X-RapidAPI-Key": api_key,
+                "X-RapidAPI-Host": "facebook-scraper3.p.rapidapi.com",
+            },
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return
+        posts_raw = r.json().get("results", [])
+        if not posts_raw:
+            return
+        # Only populate if we don't already have posts
+        if result.get("recent_posts"):
+            return
+        import datetime
+        result["recent_posts"] = []
+        total_reactions = 0
+        total_comments = 0
+        for p in posts_raw:
+            ts = p.get("timestamp")
+            date_str = (
+                datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                if ts else None
+            )
+            author = p.get("author") or {}
+            post = {
+                "url": p.get("url"),
+                "message": (p.get("message") or "")[:200],
+                "date": date_str,
+                "reactions": p.get("reactions_count", 0) or 0,
+                "comments": p.get("comments_count", 0) or 0,
+                "shares": p.get("reshare_count", 0) or 0,
+                "type": p.get("type", "post"),
+                "author_name": author.get("name"),
+            }
+            result["recent_posts"].append(post)
+            total_reactions += post["reactions"]
+            total_comments += post["comments"]
+        n = len(result["recent_posts"])
+        if n:
+            result["avg_engagement"] = round((total_reactions + total_comments) / n)
+            result["data_sources"].append(f"Facebook Scraper3 (post search: {n})")
     except Exception:
         pass
 
@@ -282,8 +449,11 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
         "category": None,
         "founded": None,
         "location": None,
+        "address": None,
         "general_info": None,
         "mission": None,
+        "recent_posts": [],
+        "avg_engagement": None,
         "data_sources": [],
         "security_notes": [],
         "dorks": [],
@@ -380,6 +550,9 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
     # ── Facebook Scraper3 RapidAPI (optional enrichment) ─────────────────
     if fb_scraper_key:
         _try_facebook_scraper3(identifier, fb_scraper_key, result)
+        _try_facebook_scraper3_people(identifier, fb_scraper_key, result)
+        _try_facebook_scraper3_posts(identifier, fb_scraper_key, result)
+        _try_facebook_scraper3_search_posts(identifier, fb_scraper_key, result)
 
     # ── Infer account type ─────────────────────────────────────────────────
     if not result.get("account_type"):
@@ -477,6 +650,21 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
                 if result.get("profile_pic")
                 else "https://images.google.com/"
             ),
+        },
+        {
+            "label": "LinkedIn identity match",
+            "query": f'site:linkedin.com "{q}"',
+            "url": f'https://www.google.com/search?q=site%3Alinkedin.com+%22{enc_q}%22',
+        },
+        {
+            "label": "News & media coverage",
+            "query": f'"{q}" site:news.google.com OR inurl:article OR inurl:news',
+            "url": f'https://news.google.com/search?q=%22{enc_q}%22',
+        },
+        {
+            "label": "Archived / historical version",
+            "query": f"Wayback Machine snapshots of this Facebook profile",
+            "url": f"https://web.archive.org/web/*/{profile_url}",
         },
     ]
     return result
@@ -730,6 +918,33 @@ def print_facebook_results(data: dict):
         console.print(f"  Profile Pic  : [link={data['profile_pic']}][cyan]View image ↗[/cyan][/link]")
     if data.get("cover_photo"):
         console.print(f"  Cover Photo  : [link={data['cover_photo']}][cyan]View image ↗[/cyan][/link]")
+
+    # Recent posts table
+    posts = data.get("recent_posts") or []
+    if posts:
+        avg = data.get("avg_engagement")
+        avg_str = f"  (avg engagement: {avg:,})" if avg else ""
+        console.print(f"\n  [bold]Recent Posts[/bold]{avg_str}:")
+        from rich.table import Table
+        tbl = Table(show_header=True, header_style="bold cyan", show_lines=False, padding=(0, 1))
+        tbl.add_column("Date", style="dim", width=11)
+        tbl.add_column("Type", width=6)
+        tbl.add_column("Message", min_width=30, max_width=55)
+        tbl.add_column("❤", justify="right", width=7)
+        tbl.add_column("💬", justify="right", width=7)
+        tbl.add_column("URL", min_width=18, max_width=40, style="cyan")
+        for p in posts:
+            msg = (p.get("message") or "")[:55] + ("…" if len(p.get("message") or "") > 55 else "")
+            author_note = f" [dim]({p['author_name']})[/dim]" if p.get("author_name") else ""
+            tbl.add_row(
+                p.get("date") or "—",
+                p.get("type") or "post",
+                msg + author_note,
+                str(p.get("reactions") or 0),
+                str(p.get("comments") or 0),
+                p.get("url") or "—",
+            )
+        console.print(tbl)
 
     if data["security_notes"]:
         console.print("\n  [bold yellow]⚠ Security Observations:[/bold yellow]")
