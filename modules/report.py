@@ -132,6 +132,72 @@ def build_html_report(target: str, all_data: dict) -> str:
             rows = [(name, f'<a href="{url}" target="_blank">{url}</a>') for name, url in links_data.items()]
             sections.append(_section("External Recon Links", _table(rows)))
 
+        # VirusTotal
+        vt = all_data["ip"].get("virustotal", {})
+        if vt and vt.get("success"):
+            mal = vt.get("malicious", 0)
+            sus = vt.get("suspicious", 0)
+            rep = vt.get("reputation", 0)
+            color_cls = "danger" if mal > 0 else ("warning" if sus > 0 else "found")
+            vt_html = f'<p class="{color_cls}"><strong>{mal} malicious / {sus} suspicious</strong> (reputation score: {rep})</p>'
+            if vt.get("as_owner"):
+                vt_html += f'<p>AS Owner: {vt["as_owner"]}</p>'
+            if vt.get("country"):
+                vt_html += f'<p>Country: {vt["country"]}</p>'
+            if vt.get("categories"):
+                cats = ", ".join(f"{k}: {v}" for k, v in list(vt["categories"].items())[:5])
+                vt_html += f'<p>Categories: {cats}</p>'
+            sections.append(_section("VirusTotal Analysis", vt_html))
+
+        # Shodan
+        shodan = all_data["ip"].get("shodan", {})
+        if shodan and shodan.get("success"):
+            ports = shodan.get("ports", [])
+            vulns = shodan.get("vulns", [])
+            sh_rows = []
+            sh_rows.append(("Open Ports", ", ".join(str(p) for p in ports) or "None"))
+            if shodan.get("org"):
+                sh_rows.append(("Organization", shodan["org"]))
+            if shodan.get("os"):
+                sh_rows.append(("OS", shodan["os"]))
+            if shodan.get("isp"):
+                sh_rows.append(("ISP", shodan["isp"]))
+            if shodan.get("last_update"):
+                sh_rows.append(("Last Scan", str(shodan["last_update"])[:10]))
+            sh_html = _table(sh_rows, ["Field", "Value"])
+            if vulns:
+                sh_html += f'<p class="danger">⚠ {len(vulns)} CVE(s) detected: {", ".join(vulns[:10])}</p>'
+            if shodan.get("services"):
+                svc_rows = [
+                    (str(s.get("port", "")), s.get("transport", "tcp"),
+                     s.get("product") or "—", s.get("version") or "—")
+                    for s in shodan["services"][:10]
+                ]
+                sh_html += "<br>" + _table(svc_rows, ["Port", "Proto", "Product", "Version"])
+            sections.append(_section("Shodan Intelligence", sh_html))
+
+        # AbuseIPDB
+        abuse = all_data["ip"].get("abuseipdb", {})
+        if abuse and abuse.get("success"):
+            score = abuse.get("abuse_confidence_score", 0)
+            reports = abuse.get("total_reports", 0)
+            score_cls = "danger" if score >= 50 else ("warning" if score >= 10 else "found")
+            ab_rows = [
+                ("Abuse Score", f'<span class="{score_cls}"><strong>{score}%</strong></span>'),
+                ("Total Reports", str(reports)),
+            ]
+            if abuse.get("usage_type"):
+                ab_rows.append(("Usage Type", abuse["usage_type"]))
+            if abuse.get("isp"):
+                ab_rows.append(("ISP", abuse["isp"]))
+            if abuse.get("domain"):
+                ab_rows.append(("Domain", abuse["domain"]))
+            if abuse.get("is_tor"):
+                ab_rows.append(("TOR Node", '<span class="danger">Yes — TOR Exit Node</span>'))
+            if abuse.get("last_reported_at"):
+                ab_rows.append(("Last Report", str(abuse["last_reported_at"])[:16]))
+            sections.append(_section("AbuseIPDB Reputation", _table(ab_rows, ["Field", "Value"])))
+
     # Email
     if "email" in all_data:
         e = all_data["email"]
@@ -147,6 +213,55 @@ def build_html_report(target: str, all_data: dict) -> str:
             summary += _table(rows, ["Breach", "Date", "Records", "Data Types"])
         else:
             summary += '<p class="found">✓ No breaches found (HIBP)</p>'
+
+        # Hunter.io
+        hunter = e.get("hunter", {})
+        if hunter and hunter.get("success"):
+            summary += '<br><strong>Hunter.io:</strong>'
+            h_rows = []
+            if hunter.get("organization"):
+                h_rows.append(("Organization", hunter["organization"]))
+            if hunter.get("pattern"):
+                h_rows.append(("Email Pattern", f'<code>{hunter["pattern"]}@{hunter.get("domain","")}</code>'))
+            h_rows.append(("Total Emails Found", str(hunter.get("total_emails", 0))))
+            if hunter.get("webmail"):
+                h_rows.append(("Type", "Webmail provider"))
+            if hunter.get("disposable"):
+                h_rows.append(("Warning", '<span class="danger">Disposable domain</span>'))
+            summary += _table(h_rows, ["Field", "Value"])
+            if hunter.get("emails"):
+                em_rows = [
+                    (
+                        em.get("value", ""),
+                        em.get("type", ""),
+                        f'{em.get("confidence","")}%' if em.get("confidence") is not None else "—",
+                        f'{em.get("first_name","")} {em.get("last_name","")}'.strip() or "—",
+                        em.get("position") or "—",
+                    )
+                    for em in hunter["emails"][:10]
+                ]
+                summary += "<br>" + _table(em_rows, ["Email", "Type", "Confidence", "Name", "Position"])
+
+        # EmailRep.io
+        emailrep = e.get("emailrep", {})
+        if emailrep and emailrep.get("success"):
+            rep = emailrep.get("reputation", "none")
+            rep_cls = {"high": "found", "medium": "warning", "low": "danger", "none": ""}.get(rep, "")
+            summary += f'<br><strong>EmailRep.io:</strong> Reputation: <span class="{rep_cls}">{rep}</span>'
+            flags = []
+            if emailrep.get("suspicious"):         flags.append('<span class="danger">suspicious</span>')
+            if emailrep.get("blacklisted"):        flags.append('<span class="danger">blacklisted</span>')
+            if emailrep.get("malicious_activity"): flags.append('<span class="danger">malicious activity</span>')
+            if emailrep.get("credentials_leaked"): flags.append('<span class="warning">credentials leaked</span>')
+            if emailrep.get("data_breach"):        flags.append('<span class="warning">data breach</span>')
+            if emailrep.get("spam"):               flags.append('<span class="warning">spam</span>')
+            if emailrep.get("disposable"):         flags.append('<span class="warning">disposable</span>')
+            if flags:
+                summary += " | " + " | ".join(flags)
+            summary += f' | {emailrep.get("references", 0)} references'
+            if emailrep.get("profiles"):
+                summary += f'<br>Profiles: {", ".join(emailrep["profiles"][:8])}'
+
         sections.append(_section("Email Intelligence", summary))
 
     # Username
@@ -168,6 +283,16 @@ def build_html_report(target: str, all_data: dict) -> str:
                 "Carrier": p.get("carrier"),
                 "Timezones": ", ".join(p.get("timezones", [])),
             }
+            nv = p.get("numverify", {})
+            if nv and nv.get("success") and nv.get("valid"):
+                if nv.get("line_type"):
+                    phone_data["Line Type (Live)"] = nv["line_type"]
+                if nv.get("carrier") and nv.get("carrier") != p.get("carrier"):
+                    phone_data["Carrier (Live)"] = nv["carrier"]
+                if nv.get("location"):
+                    phone_data["Location"] = nv["location"]
+                if nv.get("country_name"):
+                    phone_data["Country (Live)"] = nv["country_name"]
             sections.append(_section("Phone Intelligence", _kv_table(phone_data)))
 
     # Facebook
@@ -402,6 +527,111 @@ def build_html_report(target: str, all_data: dict) -> str:
             )
             html += "</ul>"
         sections.append(_section("TikTok Intelligence", html))
+
+    # Instagram
+    if "instagram" in all_data:
+        ig = all_data["instagram"]
+        status_cls = "found" if ig.get("is_public") else ("warning" if ig.get("exists") else "danger")
+        status_label = "Public" if ig.get("is_public") else ("Private" if ig.get("exists") else "Not Found")
+        rows = [
+            ("URL", f'<a href="{ig["profile_url"]}" target="_blank">{ig["profile_url"]}</a>'),
+            ("Status", f'<span class="{status_cls}">{status_label}</span>'),
+        ]
+        if ig.get("full_name"):
+            verified_badge = ' <span style="color:#f5a623">✓ Verified</span>' if ig.get("is_verified") else ""
+            rows.append(("Full Name", f'<strong>{ig["full_name"]}</strong>{verified_badge}'))
+        if ig.get("biography"):
+            rows.append(("Bio", ig["biography"][:200]))
+        if ig.get("category"):
+            rows.append(("Category", ig["category"]))
+        if ig.get("city_name"):
+            rows.append(("City", ig["city_name"]))
+        if ig.get("external_url"):
+            rows.append(("Website", f'<a href="{ig["external_url"]}" target="_blank">{ig["external_url"]}</a>'))
+        if ig.get("public_email"):
+            rows.append(("Public Email", f'<span class="warning">{ig["public_email"]}</span>'))
+        if ig.get("public_phone"):
+            rows.append(("Public Phone", f'<span class="warning">{ig["public_phone"]}</span>'))
+        stats = []
+        if ig.get("follower_count") is not None:
+            fc = ig["follower_count"]
+            stats.append(f"{fc:,} followers" if isinstance(fc, int) else str(fc))
+        if ig.get("following_count") is not None:
+            fw = ig["following_count"]
+            stats.append(f"{fw:,} following" if isinstance(fw, int) else str(fw))
+        if ig.get("media_count") is not None:
+            mc = ig["media_count"]
+            stats.append(f"{mc:,} posts" if isinstance(mc, int) else str(mc))
+        if stats:
+            rows.append(("Stats", " | ".join(stats)))
+        if ig.get("profile_pic"):
+            rows.append(("Profile Picture", f'<a href="{ig["profile_pic"]}" target="_blank">View image ↗</a>'))
+        if ig.get("data_sources"):
+            rows.append(("Data Sources", ", ".join(ig["data_sources"])))
+        html = _table(rows, ["Field", "Value"])
+        if ig.get("security_notes"):
+            html += "<br><strong>⚠ Security Observations:</strong><ul>"
+            html += "".join(f'<li class="warning">{n}</li>' for n in ig["security_notes"])
+            html += "</ul>"
+        if ig.get("dorks"):
+            html += "<br><strong>Investigation Dorks:</strong><ul>"
+            html += "".join(
+                f'<li><a href="{d["url"]}" target="_blank">{d["label"]}</a>: <code>{d["query"]}</code></li>'
+                for d in ig["dorks"]
+            )
+            html += "</ul>"
+        sections.append(_section("Instagram Intelligence", html))
+
+    # Twitter / X
+    if "twitter" in all_data:
+        tw = all_data["twitter"]
+        status_cls = "found" if tw.get("is_public") else ("warning" if tw.get("exists") else "danger")
+        status_label = "Public" if tw.get("is_public") else ("Protected" if tw.get("exists") else "Not Found")
+        rows = [
+            ("URL", f'<a href="{tw["profile_url"]}" target="_blank">{tw["profile_url"]}</a>'),
+            ("Status", f'<span class="{status_cls}">{status_label}</span>'),
+        ]
+        if tw.get("name"):
+            verified_badge = ' <span style="color:#f5a623">✓ Verified</span>' if tw.get("is_verified") else ""
+            rows.append(("Name", f'<strong>{tw["name"]}</strong>{verified_badge}'))
+        if tw.get("description"):
+            rows.append(("Bio", tw["description"][:200]))
+        if tw.get("location"):
+            rows.append(("Location", tw["location"]))
+        if tw.get("expanded_url") or tw.get("url"):
+            link = tw.get("expanded_url") or tw.get("url")
+            rows.append(("Website", f'<a href="{link}" target="_blank">{link}</a>'))
+        if tw.get("created_at"):
+            rows.append(("Joined", str(tw["created_at"])[:10]))
+        stats = []
+        if tw.get("follower_count") is not None:
+            fc = tw["follower_count"]
+            stats.append(f"{fc:,} followers" if isinstance(fc, int) else str(fc))
+        if tw.get("following_count") is not None:
+            fw = tw["following_count"]
+            stats.append(f"{fw:,} following" if isinstance(fw, int) else str(fw))
+        if tw.get("tweet_count") is not None:
+            tc = tw["tweet_count"]
+            stats.append(f"{tc:,} tweets" if isinstance(tc, int) else str(tc))
+        if stats:
+            rows.append(("Stats", " | ".join(stats)))
+        if tw.get("profile_image_url"):
+            rows.append(("Avatar", f'<a href="{tw["profile_image_url"]}" target="_blank">View image ↗</a>'))
+        if tw.get("data_sources"):
+            rows.append(("Data Sources", ", ".join(tw["data_sources"])))
+        html = _table(rows, ["Field", "Value"])
+        if tw.get("security_notes"):
+            html += "<br><strong>⚠ Security Observations:</strong><ul>"
+            html += "".join(f'<li class="warning">{n}</li>' for n in tw["security_notes"])
+            html += "</ul>"
+        if tw.get("dorks"):
+            html += "<br><strong>Investigation Dorks:</strong><ul>"
+            html += "".join(
+                f'<li><a href="{d["url"]}" target="_blank">{d["label"]}</a>: <code>{d["query"]}</code></li>'
+                for d in tw["dorks"]
+            )
+            html += "</ul>"
+        sections.append(_section("Twitter / X Intelligence", html))
 
     # YouTube
     if "youtube" in all_data:

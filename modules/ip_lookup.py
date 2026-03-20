@@ -196,46 +196,175 @@ def detect_tech_stack(domain: str, existing_headers: dict = None) -> dict:
     return {"technologies": detected}
 
 
-def generate_recon_links(target: str) -> dict:
+def check_virustotal(target: str, api_key: str) -> dict:
+    """Query VirusTotal v3 API for domain/IP threat intel (1000 free req/day)."""
+    is_ip = not any(c.isalpha() for c in target)
+    endpoint = "ip_addresses" if is_ip else "domains"
+    url = f"https://www.virustotal.com/api/v3/{endpoint}/{target}"
+    try:
+        resp = requests.get(url, headers={"x-apikey": api_key, **HEADERS}, timeout=12)
+        if resp.status_code == 200:
+            attrs = resp.json().get("data", {}).get("attributes", {})
+            stats = attrs.get("last_analysis_stats", {})
+            return {
+                "success": True,
+                "malicious": stats.get("malicious", 0),
+                "suspicious": stats.get("suspicious", 0),
+                "harmless": stats.get("harmless", 0),
+                "undetected": stats.get("undetected", 0),
+                "reputation": attrs.get("reputation", 0),
+                "categories": attrs.get("categories", {}),
+                "last_analysis_date": attrs.get("last_analysis_date"),
+                "country": attrs.get("country"),
+                "as_owner": attrs.get("as_owner"),
+            }
+        elif resp.status_code == 401:
+            return {"success": False, "error": "Invalid API key"}
+        elif resp.status_code == 404:
+            return {"success": False, "error": "Not found in VirusTotal database"}
+        else:
+            return {"success": False, "error": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def check_shodan(ip: str, api_key: str) -> dict:
+    """Query Shodan for open ports, banners, CVEs on an IP (free tier: 100 req/month)."""
+    url = f"https://api.shodan.io/shodan/host/{ip}"
+    try:
+        resp = requests.get(url, params={"key": api_key}, headers=HEADERS, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            return {
+                "success": True,
+                "ports": data.get("ports", []),
+                "hostnames": data.get("hostnames", []),
+                "org": data.get("org"),
+                "os": data.get("os"),
+                "country_name": data.get("country_name"),
+                "city": data.get("city"),
+                "isp": data.get("isp"),
+                "last_update": data.get("last_update"),
+                "vulns": list(data.get("vulns", {}).keys()),
+                "services": [
+                    {
+                        "port": s.get("port"),
+                        "transport": s.get("transport"),
+                        "product": s.get("product"),
+                        "version": s.get("version"),
+                        "cpe": s.get("cpe", []),
+                    }
+                    for s in data.get("data", [])[:10]
+                ],
+            }
+        elif resp.status_code == 401:
+            return {"success": False, "error": "Invalid Shodan API key"}
+        elif resp.status_code == 404:
+            return {"success": False, "error": "No information available for this IP"}
+        else:
+            return {"success": False, "error": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def check_abuseipdb(ip: str, api_key: str) -> dict:
+    """Query AbuseIPDB for IP reputation / abuse reports (1000 free req/day)."""
+    url = "https://api.abuseipdb.com/api/v2/check"
+    try:
+        resp = requests.get(
+            url,
+            headers={"Key": api_key, "Accept": "application/json", **HEADERS},
+            params={"ipAddress": ip, "maxAgeInDays": 90, "verbose": True},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            d = resp.json().get("data", {})
+            return {
+                "success": True,
+                "abuse_confidence_score": d.get("abuseConfidenceScore", 0),
+                "total_reports": d.get("totalReports", 0),
+                "last_reported_at": d.get("lastReportedAt"),
+                "country_code": d.get("countryCode"),
+                "usage_type": d.get("usageType"),
+                "isp": d.get("isp"),
+                "domain": d.get("domain"),
+                "is_whitelisted": d.get("isWhitelisted", False),
+                "is_tor": d.get("isTor", False),
+            }
+        elif resp.status_code == 401:
+            return {"success": False, "error": "Invalid AbuseIPDB API key"}
+        elif resp.status_code == 422:
+            return {"success": False, "error": "Invalid IP address format"}
+        else:
+            return {"success": False, "error": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def generate_recon_links(target: str, ip_target: str = None) -> dict:
     encoded = requests.utils.quote(target)
+    ip = ip_target or target
     return {
-        "Shodan": f"https://www.shodan.io/host/{target}",
+        "Shodan": f"https://www.shodan.io/host/{ip}",
         "VirusTotal": f"https://www.virustotal.com/gui/domain/{target}",
-        "Censys": f"https://search.censys.io/hosts/{target}",
+        "Censys": f"https://search.censys.io/hosts/{ip}",
         "SecurityTrails": f"https://securitytrails.com/domain/{target}/history/a",
         "URLScan": f"https://urlscan.io/search/#page.domain%3A{encoded}",
         "BuiltWith": f"https://builtwith.com/{target}",
         "Wayback Machine": f"https://web.archive.org/web/*/{target}",
         "DNSDumpster": f"https://dnsdumpster.com/ (search: {target})",
+        "AbuseIPDB": f"https://www.abuseipdb.com/check/{ip}",
     }
 
 
-def ip_lookup(target: str) -> dict:
+def ip_lookup(target: str, virustotal_key: str = None, shodan_key: str = None, abuseipdb_key: str = None) -> dict:
     geo = ip_geolocation(target)
     rev = []
     headers_info = {}
     sec_score = {}
     tech_stack = {}
+    is_ip = not any(c.isalpha() for c in target)
 
     if geo.get("success"):
         ip = geo["data"].get("query", target)
-        if not any(c.isalpha() for c in target):  # is IP
+        if is_ip:
             rev = reverse_ip_lookup(ip)
 
-    if any(c.isalpha() for c in target):
+    if not is_ip:
         headers_info = get_headers_info(target)
         sec_score = score_security_headers(headers_info)
         tech_stack = detect_tech_stack(target, headers_info)
 
-    return {
+    result = {
         "target": target,
         "geo": geo,
         "reverse_ip": rev,
         "http_headers": headers_info,
         "security_score": sec_score,
         "tech_stack": tech_stack,
-        "recon_links": generate_recon_links(target),
     }
+
+    ip_for_api = geo["data"].get("query", target) if geo.get("success") else target
+    # resolved_ip: use the geo-resolved IP for Shodan/AbuseIPDB even when target is a domain
+    resolved_ip = ip_for_api if (ip_for_api and not any(c.isalpha() for c in ip_for_api)) else None
+
+    # Build recon links: use resolved IP for IP-only services when target is a domain
+    recon_target_ip = resolved_ip or target
+    result["recon_links"] = generate_recon_links(target, recon_target_ip)
+
+    if virustotal_key:
+        console.print("  [dim]Querying VirusTotal...[/dim]")
+        result["virustotal"] = check_virustotal(target, virustotal_key)
+
+    if shodan_key and resolved_ip:
+        console.print("  [dim]Querying Shodan...[/dim]")
+        result["shodan"] = check_shodan(resolved_ip, shodan_key)
+
+    if abuseipdb_key and resolved_ip:
+        console.print("  [dim]Querying AbuseIPDB...[/dim]")
+        result["abuseipdb"] = check_abuseipdb(resolved_ip, abuseipdb_key)
+
+    return result
 
 
 def print_ip_results(data: dict):
@@ -308,6 +437,61 @@ def print_ip_results(data: dict):
     if tech.get("technologies"):
         techs = ", ".join(tech["technologies"])
         console.print(f"\n  [bold]Detected Technologies:[/bold] [magenta]{techs}[/magenta]")
+
+    # VirusTotal
+    vt = data.get("virustotal", {})
+    if vt:
+        if vt.get("success"):
+            mal = vt.get("malicious", 0)
+            sus = vt.get("suspicious", 0)
+            rep = vt.get("reputation", 0)
+            color = "red" if mal > 0 else ("yellow" if sus > 0 else "green")
+            console.print(f"\n  [bold]VirusTotal:[/bold] [{color}]{mal} malicious / {sus} suspicious[/{color}]  (reputation: {rep})")
+            if vt.get("as_owner"):
+                console.print(f"    AS Owner : {vt['as_owner']}")
+            if vt.get("country"):
+                console.print(f"    Country  : {vt['country']}")
+        else:
+            console.print(f"\n  [dim]VirusTotal: {vt.get('error', 'N/A')}[/dim]")
+
+    # Shodan
+    shodan = data.get("shodan", {})
+    if shodan:
+        if shodan.get("success"):
+            ports = shodan.get("ports", [])
+            vulns = shodan.get("vulns", [])
+            console.print(f"\n  [bold]Shodan:[/bold] {len(ports)} open port(s): [cyan]{', '.join(str(p) for p in ports[:20])}[/cyan]")
+            if shodan.get("org"):
+                console.print(f"    Org      : {shodan['org']}")
+            if shodan.get("os"):
+                console.print(f"    OS       : {shodan['os']}")
+            if vulns:
+                console.print(f"    [bold red]CVEs ({len(vulns)}):[/bold red] [red]{', '.join(vulns[:10])}[/red]")
+            for svc in shodan.get("services", [])[:5]:
+                product = svc.get("product") or ""
+                version = svc.get("version") or ""
+                console.print(f"    Port {svc.get('port'):>5}/{svc.get('transport','tcp')} : {product} {version}".rstrip())
+        else:
+            console.print(f"\n  [dim]Shodan: {shodan.get('error', 'N/A')}[/dim]")
+
+    # AbuseIPDB
+    abuse = data.get("abuseipdb", {})
+    if abuse:
+        if abuse.get("success"):
+            score = abuse.get("abuse_confidence_score", 0)
+            reports = abuse.get("total_reports", 0)
+            color = "red" if score >= 50 else ("yellow" if score >= 10 else "green")
+            console.print(f"\n  [bold]AbuseIPDB:[/bold] [{color}]{score}% abuse confidence[/{color}]  ({reports} reports)")
+            if abuse.get("usage_type"):
+                console.print(f"    Usage    : {abuse['usage_type']}")
+            if abuse.get("isp"):
+                console.print(f"    ISP      : {abuse['isp']}")
+            if abuse.get("is_tor"):
+                console.print(f"    [red]⚠ TOR Exit Node[/red]")
+            if abuse.get("last_reported_at"):
+                console.print(f"    Last seen: {abuse['last_reported_at']}")
+        else:
+            console.print(f"\n  [dim]AbuseIPDB: {abuse.get('error', 'N/A')}[/dim]")
 
     # Recon links
     console.print("\n  [bold]External Recon Links:[/bold]")

@@ -93,6 +93,92 @@ def check_gravatar(email: str) -> dict:
     return {"found": False}
 
 
+def check_hunter(domain: str, api_key: str) -> dict:
+    """Query Hunter.io for email pattern and known addresses on a domain (25 free req/month)."""
+    url = "https://api.hunter.io/v2/domain-search"
+    try:
+        resp = requests.get(
+            url,
+            params={"domain": domain, "api_key": api_key, "limit": 10},
+            headers=HEADERS,
+            timeout=12,
+        )
+        if resp.status_code == 200:
+            d = resp.json().get("data", {})
+            emails = [
+                {
+                    "value": e.get("value"),
+                    "type": e.get("type"),
+                    "confidence": e.get("confidence"),
+                    "first_name": e.get("first_name"),
+                    "last_name": e.get("last_name"),
+                    "position": e.get("position"),
+                    "linkedin": e.get("linkedin"),
+                }
+                for e in d.get("emails", [])[:10]
+            ]
+            return {
+                "success": True,
+                "pattern": d.get("pattern"),
+                "organization": d.get("organization"),
+                "domain": d.get("domain"),
+                "webmail": d.get("webmail", False),
+                "disposable": d.get("disposable", False),
+                "total_emails": d.get("total", 0),
+                "emails": emails,
+                "twitter": d.get("twitter"),
+                "linkedin": d.get("linkedin"),
+            }
+        elif resp.status_code == 401:
+            return {"success": False, "error": "Invalid Hunter.io API key"}
+        elif resp.status_code == 429:
+            return {"success": False, "error": "Hunter.io rate limit reached (25/month free)"}
+        else:
+            return {"success": False, "error": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def check_emailrep(email: str, api_key: str = None) -> dict:
+    """Query EmailRep.io for email reputation and risk signals (1000 free req/day)."""
+    url = f"https://emailrep.io/{email}"
+    headers = {**HEADERS}
+    if api_key:
+        headers["Key"] = api_key
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            d = resp.json()
+            attrs = d.get("details", {})
+            return {
+                "success": True,
+                "reputation": d.get("reputation", "none"),
+                "suspicious": d.get("suspicious", False),
+                "references": d.get("references", 0),
+                "blacklisted": attrs.get("blacklisted", False),
+                "malicious_activity": attrs.get("malicious_activity", False),
+                "credentials_leaked": attrs.get("credentials_leaked", False),
+                "data_breach": attrs.get("data_breach", False),
+                "spam": attrs.get("spam", False),
+                "free_provider": attrs.get("free_provider", False),
+                "disposable": attrs.get("disposable", False),
+                "profiles": attrs.get("profiles", []),
+                "first_seen": attrs.get("first_seen"),
+                "last_seen": attrs.get("last_seen"),
+                "domain_exists": attrs.get("domain_exists", True),
+                "domain_reputation": attrs.get("domain_reputation", "none"),
+                "new_domain": attrs.get("new_domain", False),
+            }
+        elif resp.status_code == 400:
+            return {"success": False, "error": "Invalid email address"}
+        elif resp.status_code == 429:
+            return {"success": False, "error": "EmailRep rate limit reached"}
+        else:
+            return {"success": False, "error": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def generate_search_links(email: str) -> dict:
     """Generate public search engine dork links for an email."""
     encoded = requests.utils.quote(email)
@@ -104,12 +190,12 @@ def generate_search_links(email: str) -> dict:
     }
 
 
-def email_recon(email: str, hibp_api_key: str = None) -> dict:
+def email_recon(email: str, hibp_api_key: str = None, hunter_key: str = None, emailrep_key: str = None) -> dict:
     if not validate_email(email):
         return {"error": "Invalid email format"}
 
     domain = email.split("@")[1]
-    return {
+    result = {
         "email": email,
         "domain": domain,
         "valid_format": True,
@@ -118,6 +204,14 @@ def email_recon(email: str, hibp_api_key: str = None) -> dict:
         "hibp": check_hibp(email, hibp_api_key),
         "search_links": generate_search_links(email),
     }
+
+    if hunter_key:
+        result["hunter"] = check_hunter(domain, hunter_key)
+
+    if emailrep_key is not None:  # allow empty string → unauthenticated request
+        result["emailrep"] = check_emailrep(email, emailrep_key or None)
+
+    return result
 
 
 def print_email_results(data: dict):
@@ -170,6 +264,55 @@ def print_email_results(data: dict):
         console.print(table)
     else:
         console.print("  HIBP          : [green]No breaches found[/green]")
+
+    # Hunter.io
+    hunter = data.get("hunter", {})
+    if hunter:
+        if hunter.get("success"):
+            console.print(f"\n  [bold]Hunter.io:[/bold]")
+            if hunter.get("organization"):
+                console.print(f"    Organization : {hunter['organization']}")
+            if hunter.get("pattern"):
+                console.print(f"    Email Pattern: [cyan]{hunter['pattern']}@{hunter.get('domain', '')}[/cyan]")
+            total = hunter.get("total_emails", 0)
+            console.print(f"    Total Emails : {total}")
+            if hunter.get("webmail"):
+                console.print(f"    [dim]Webmail provider[/dim]")
+            if hunter.get("disposable"):
+                console.print(f"    [red]⚠ Disposable domain[/red]")
+            for e in hunter.get("emails", [])[:5]:
+                name = f"{e.get('first_name','')} {e.get('last_name','')}".strip()
+                pos = f" — {e['position']}" if e.get("position") else ""
+                conf = f" ({e['confidence']}%)" if e.get("confidence") is not None else ""
+                console.print(f"    [green]✓[/green] {e['value']}{conf}  {name}{pos}")
+        else:
+            console.print(f"\n  [dim]Hunter.io: {hunter.get('error', 'N/A')}[/dim]")
+
+    # EmailRep.io
+    emailrep = data.get("emailrep", {})
+    if emailrep:
+        if emailrep.get("success"):
+            rep = emailrep.get("reputation", "none")
+            rep_color = {"high": "green", "medium": "yellow", "low": "red", "none": "dim"}.get(rep, "white")
+            console.print(f"\n  [bold]EmailRep.io:[/bold] [{rep_color}]{rep} reputation[/{rep_color}]")
+            flags = []
+            if emailrep.get("suspicious"):   flags.append("[red]suspicious[/red]")
+            if emailrep.get("blacklisted"):  flags.append("[red]blacklisted[/red]")
+            if emailrep.get("malicious_activity"): flags.append("[red]malicious activity[/red]")
+            if emailrep.get("credentials_leaked"): flags.append("[yellow]credentials leaked[/yellow]")
+            if emailrep.get("data_breach"):  flags.append("[yellow]data breach[/yellow]")
+            if emailrep.get("spam"):         flags.append("[yellow]spam[/yellow]")
+            if emailrep.get("disposable"):   flags.append("[yellow]disposable[/yellow]")
+            if emailrep.get("free_provider"): flags.append("[dim]free provider[/dim]")
+            if flags:
+                console.print(f"    Flags    : {' | '.join(flags)}")
+            console.print(f"    References : {emailrep.get('references', 0)}")
+            if emailrep.get("profiles"):
+                console.print(f"    Profiles : {', '.join(emailrep['profiles'][:8])}")
+            if emailrep.get("first_seen"):
+                console.print(f"    First seen: {emailrep['first_seen']}")
+        else:
+            console.print(f"\n  [dim]EmailRep.io: {emailrep.get('error', 'N/A')}[/dim]")
 
     # Search links
     console.print("\n  [bold]Search Links:[/bold]")

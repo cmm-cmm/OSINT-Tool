@@ -169,7 +169,12 @@ def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip, report,
     if do_ip:
         if out_fmt == "table":
             console.print("[dim]Running IP/domain intelligence...[/dim]")
-        data = ip_lookup(target)
+        data = ip_lookup(
+            target,
+            virustotal_key=os.getenv("VIRUSTOTAL_KEY"),
+            shodan_key=os.getenv("SHODAN_KEY"),
+            abuseipdb_key=os.getenv("ABUSEIPDB_KEY"),
+        )
         all_data["ip"] = data
         if out_fmt == "table":
             print_ip_results(data)
@@ -195,11 +200,13 @@ def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip, report,
 @cli.command("email")
 @click.argument("email_addr")
 @click.option("--hibp-key", envvar="HIBP_API_KEY", default=None, help="HaveIBeenPwned API key")
+@click.option("--hunter-key", envvar="HUNTER_KEY", default=None, help="Hunter.io API key (env: HUNTER_KEY)")
+@click.option("--emailrep-key", envvar="EMAILREP_KEY", default=None, help="EmailRep.io key (env: EMAILREP_KEY, optional)")
 @click.option("--dorks/--no-dorks", "do_dorks", default=True, help="Generate email dorks")
 @click.option("--report", is_flag=True, help="Save HTML+JSON report")
 @click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
 @click.option("--output-format", "out_fmt", type=click.Choice(["table", "json"]), default="table", help="Output format")
-def cmd_email(email_addr, hibp_key, do_dorks, report, output, out_fmt):
+def cmd_email(email_addr, hibp_key, hunter_key, emailrep_key, do_dorks, report, output, out_fmt):
     """Investigate an email address.
 
     Example: python osint.py email user@example.com --hibp-key YOUR_KEY
@@ -214,7 +221,12 @@ def cmd_email(email_addr, hibp_key, do_dorks, report, output, out_fmt):
 
     if out_fmt == "table":
         console.print("[dim]Analyzing email...[/dim]")
-    data = email_recon(email_addr, hibp_key)
+    data = email_recon(
+        email_addr,
+        hibp_api_key=hibp_key,
+        hunter_key=hunter_key or os.getenv("HUNTER_KEY"),
+        emailrep_key=emailrep_key if emailrep_key is not None else os.getenv("EMAILREP_KEY", ""),
+    )
     all_data["email"] = data
     if out_fmt == "table":
         print_email_results(data)
@@ -256,10 +268,11 @@ def cmd_username(username, report, output):
 @cli.command("phone")
 @click.argument("phone_number")
 @click.option("--region", default="VN", help="Default region (e.g. VN, US, GB)")
+@click.option("--numverify-key", envvar="NUMVERIFY_KEY", default=None, help="NumVerify API key (env: NUMVERIFY_KEY)")
 @click.option("--report", is_flag=True, help="Save HTML+JSON report")
 @click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
 @click.option("--output-format", "out_fmt", type=click.Choice(["table", "json"]), default="table", help="Output format")
-def cmd_phone(phone_number, region, report, output, out_fmt):
+def cmd_phone(phone_number, region, numverify_key, report, output, out_fmt):
     """Analyze a phone number (offline + public data).
 
     Example: python osint.py phone +84901234567
@@ -268,7 +281,7 @@ def cmd_phone(phone_number, region, report, output, out_fmt):
     if out_fmt == "table":
         print_banner()
 
-    data = phone_lookup(phone_number, region=region)
+    data = phone_lookup(phone_number, region=region, numverify_key=numverify_key or os.getenv("NUMVERIFY_KEY"))
     all_data = {"phone": data}
     if out_fmt == "table":
         print_phone_results(data)
@@ -346,22 +359,30 @@ def cmd_breach(target, password, hibp_key, breachdir_key, report, output):
               help="Facebook username, profile URL, or numeric ID")
 @click.option("--tiktok", "tt_user", default=None, metavar="USERNAME",
               help="TikTok username (with or without @)")
+@click.option("--instagram", "ig_user", default=None, metavar="USERNAME",
+              help="Instagram username (with or without @)")
+@click.option("--twitter", "tw_user", default=None, metavar="USERNAME",
+              help="Twitter/X username (with or without @)")
 @click.option("--report", is_flag=True, help="Save HTML+JSON report")
 @click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
-def cmd_social(fb_id, tt_user, report, output):
-    """Investigate Facebook and TikTok public profiles.
+def cmd_social(fb_id, tt_user, ig_user, tw_user, report, output):
+    """Investigate Facebook, TikTok, Instagram, and Twitter/X public profiles.
 
     Examples:
     \b
     python osint.py social --facebook johndoe
     python osint.py social --tiktok johndoe
+    python osint.py social --instagram johndoe
+    python osint.py social --twitter johndoe
     python osint.py social --facebook johndoe --tiktok johndoe --report
-    python osint.py social --facebook https://www.facebook.com/johndoe
     """
-    from modules.social_recon import facebook_recon, tiktok_recon, print_facebook_results, print_tiktok_results
+    from modules.social_recon import (
+        facebook_recon, tiktok_recon, print_facebook_results, print_tiktok_results,
+        instagram_recon, print_instagram_results, twitter_recon, print_twitter_results,
+    )
 
-    if not fb_id and not tt_user:
-        console.print("[red]✗ Provide at least --facebook USERNAME or --tiktok USERNAME[/red]")
+    if not fb_id and not tt_user and not ig_user and not tw_user:
+        console.print("[red]✗ Provide at least one platform: --facebook, --tiktok, --instagram, or --twitter[/red]")
         raise SystemExit(1)
 
     print_banner()
@@ -383,8 +404,20 @@ def cmd_social(fb_id, tt_user, report, output):
         all_data["tiktok"] = tt_data
         print_tiktok_results(tt_data)
 
+    if ig_user:
+        console.print("[dim]Fetching Instagram profile...[/dim]")
+        ig_data = instagram_recon(ig_user, api_key=os.getenv("INSTAGRAM_KEY"))
+        all_data["instagram"] = ig_data
+        print_instagram_results(ig_data)
+
+    if tw_user:
+        console.print("[dim]Fetching Twitter/X profile...[/dim]")
+        tw_data = twitter_recon(tw_user, bearer_token=os.getenv("TWITTER_BEARER_TOKEN"))
+        all_data["twitter"] = tw_data
+        print_twitter_results(tw_data)
+
     if report:
-        identifier = fb_id or tt_user
+        identifier = fb_id or tt_user or ig_user or tw_user
         save_report(identifier, all_data, output)
 
 
@@ -474,13 +507,23 @@ def cmd_full(target, target_type, hibp_key, region, output):  # region kept for 
         console.print("[dim]Enumerating subdomains...[/dim]")
         all_data["subdomains"] = subdomain_enum(target)
         print_subdomains(all_data["subdomains"])
-        all_data["ip"] = ip_lookup(target)
+        all_data["ip"] = ip_lookup(
+            target,
+            virustotal_key=os.getenv("VIRUSTOTAL_KEY"),
+            shodan_key=os.getenv("SHODAN_KEY"),
+            abuseipdb_key=os.getenv("ABUSEIPDB_KEY"),
+        )
         print_ip_results(all_data["ip"])
         all_data["dorks"] = generate_dorks(target, "domain")
         print_dorks(target, "domain")
 
     elif target_type == "email":
-        all_data["email"] = email_recon(target, hibp_key)
+        all_data["email"] = email_recon(
+            target,
+            hibp_api_key=hibp_key,
+            hunter_key=os.getenv("HUNTER_KEY"),
+            emailrep_key=os.getenv("EMAILREP_KEY", ""),
+        )
         print_email_results(all_data["email"])
         all_data["dorks"] = generate_dorks(target, "email")
         print_dorks(target, "email")
@@ -491,7 +534,7 @@ def cmd_full(target, target_type, hibp_key, region, output):  # region kept for 
         print_username_results(all_data["username"])
 
     elif target_type == "phone":
-        all_data["phone"] = phone_lookup(target)
+        all_data["phone"] = phone_lookup(target, numverify_key=os.getenv("NUMVERIFY_KEY"))
         print_phone_results(all_data["phone"])  # offline analysis only
 
     elif target_type == "person":
@@ -514,17 +557,17 @@ def cmd_menu():
     print_banner()
 
     MENU_ITEMS = [
-        ("1",  "Domain / IP Investigation",           "domain"),
-        ("2",  "Email Reconnaissance",                "email"),
-        ("3",  "Username Search (40+ platforms)",     "username"),
-        ("4",  "Phone Number Analysis",               "phone"),
-        ("5",  "Person / Organization Dorks",         "person"),
-        ("6",  "Social Media Recon (FB / TikTok)",    "social"),
-        ("7",  "Website Contacts Scraper",            "contacts"),
-        ("8",  "YouTube Channel Recon",               "youtube"),
-        ("9",  "Breach / Data Leak Check",            "breach"),
-        ("10", "Full Scan + Report",                  "full"),
-        ("0",  "Exit",                                None),
+        ("1",  "Domain / IP Investigation",                      "domain"),
+        ("2",  "Email Reconnaissance",                           "email"),
+        ("3",  "Username Search (40+ platforms)",                "username"),
+        ("4",  "Phone Number Analysis",                          "phone"),
+        ("5",  "Person / Organization Dorks",                    "person"),
+        ("6",  "Social Media Recon (FB / TikTok / IG / Twitter)", "social"),
+        ("7",  "Website Contacts Scraper",                       "contacts"),
+        ("8",  "YouTube Channel Recon",                          "youtube"),
+        ("9",  "Breach / Data Leak Check",                       "breach"),
+        ("10", "Full Scan + Report",                             "full"),
+        ("0",  "Exit",                                           None),
     ]
 
     while True:
@@ -562,7 +605,12 @@ def cmd_menu():
             if not validate_email(addr):
                 console.print("[red]✗ Invalid email format[/red]")
                 continue
-            data = email_recon(addr, hibp_key)
+            data = email_recon(
+                addr,
+                hibp_api_key=hibp_key,
+                hunter_key=os.getenv("HUNTER_KEY"),
+                emailrep_key=os.getenv("EMAILREP_KEY", ""),
+            )
             print_email_results(data)
             dorks = generate_dorks(addr, "email")
             all_data = {"email": data, "dorks": dorks}
@@ -581,7 +629,7 @@ def cmd_menu():
 
         elif mode == "phone":
             num = Prompt.ask("Phone number (e.g. 0901234567 or +84901234567)")
-            data = phone_lookup(num)
+            data = phone_lookup(num, numverify_key=os.getenv("NUMVERIFY_KEY"))
             print_phone_results(data)
             if do_report:
                 save_report(num, {"phone": data}, output_dir)
@@ -595,10 +643,15 @@ def cmd_menu():
                 save_report(name, all_data, output_dir)
 
         elif mode == "social":
-            from modules.social_recon import facebook_recon, tiktok_recon, print_facebook_results, print_tiktok_results
+            from modules.social_recon import (
+                facebook_recon, tiktok_recon, print_facebook_results, print_tiktok_results,
+                instagram_recon, print_instagram_results, twitter_recon, print_twitter_results,
+            )
             fb_id = Prompt.ask("Facebook username / URL / numeric ID (leave blank to skip)", default="")
             tt_user = Prompt.ask("TikTok username (leave blank to skip)", default="")
-            if not fb_id and not tt_user:
+            ig_user = Prompt.ask("Instagram username (leave blank to skip)", default="")
+            tw_user = Prompt.ask("Twitter/X username (leave blank to skip)", default="")
+            if not fb_id and not tt_user and not ig_user and not tw_user:
                 console.print("[red]✗ At least one platform is required[/red]")
                 continue
             all_data = {}
@@ -616,8 +669,18 @@ def cmd_menu():
                 )
                 all_data["tiktok"] = tt_data
                 print_tiktok_results(tt_data)
+            if ig_user:
+                console.print("[dim]Fetching Instagram profile...[/dim]")
+                ig_data = instagram_recon(ig_user, api_key=os.getenv("INSTAGRAM_KEY"))
+                all_data["instagram"] = ig_data
+                print_instagram_results(ig_data)
+            if tw_user:
+                console.print("[dim]Fetching Twitter/X profile...[/dim]")
+                tw_data = twitter_recon(tw_user, bearer_token=os.getenv("TWITTER_BEARER_TOKEN"))
+                all_data["twitter"] = tw_data
+                print_twitter_results(tw_data)
             if do_report:
-                save_report(fb_id or tt_user, all_data, output_dir)
+                save_report(fb_id or tt_user or ig_user or tw_user, all_data, output_dir)
 
         elif mode == "contacts":
             from modules.website_contacts import website_contacts_scrape, print_website_contacts
