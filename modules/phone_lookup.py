@@ -104,8 +104,8 @@ def generate_phone_search_links(phone_e164: str) -> dict:
     }
 
 
-def phone_lookup(phone_number: str) -> dict:
-    data = analyze_phone(phone_number)
+def phone_lookup(phone_number: str, region: str = "VN") -> dict:
+    data = analyze_phone(phone_number, default_region=region)
     if data.get("error"):
         return data
 

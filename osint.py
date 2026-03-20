@@ -169,8 +169,7 @@ def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip, report,
     if do_ip:
         if out_fmt == "table":
             console.print("[dim]Running IP/domain intelligence...[/dim]")
-        ip_target = resolve_ip(target) if not target[0].isdigit() else target
-        data = ip_lookup(ip_target if not target[0].isalpha() else target)
+        data = ip_lookup(target)
         all_data["ip"] = data
         if out_fmt == "table":
             print_ip_results(data)
@@ -199,7 +198,8 @@ def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip, report,
 @click.option("--dorks/--no-dorks", "do_dorks", default=True, help="Generate email dorks")
 @click.option("--report", is_flag=True, help="Save HTML+JSON report")
 @click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
-def cmd_email(email_addr, hibp_key, do_dorks, report, output):
+@click.option("--output-format", "out_fmt", type=click.Choice(["table", "json"]), default="table", help="Output format")
+def cmd_email(email_addr, hibp_key, do_dorks, report, output, out_fmt):
     """Investigate an email address.
 
     Example: python osint.py email user@example.com --hibp-key YOUR_KEY
@@ -207,19 +207,26 @@ def cmd_email(email_addr, hibp_key, do_dorks, report, output):
     if not validate_email(email_addr):
         console.print(f"[red]✗ Invalid email format: '{email_addr}'[/red]")
         raise SystemExit(1)
-    print_banner()   
+    if out_fmt == "table":
+        print_banner()
 
     all_data = {}
 
-    console.print("[dim]Analyzing email...[/dim]")
+    if out_fmt == "table":
+        console.print("[dim]Analyzing email...[/dim]")
     data = email_recon(email_addr, hibp_key)
     all_data["email"] = data
-    print_email_results(data)
+    if out_fmt == "table":
+        print_email_results(data)
 
     if do_dorks:
         dorks = generate_dorks(email_addr, "email")
         all_data["dorks"] = dorks
-        print_dorks(email_addr, "email")
+        if out_fmt == "table":
+            print_dorks(email_addr, "email")
+
+    if out_fmt == "json":
+        print(json.dumps(all_data, indent=2, ensure_ascii=False, default=str))
 
     if report:
         save_report(email_addr, all_data, output)
@@ -230,7 +237,7 @@ def cmd_email(email_addr, hibp_key, do_dorks, report, output):
 @click.option("--report", is_flag=True, help="Save HTML+JSON report")
 @click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
 def cmd_username(username, report, output):
-    """Search a username across 30+ platforms.
+    """Search a username across 40+ platforms.
 
     Example: python osint.py username johndoe --report
     """
@@ -251,17 +258,22 @@ def cmd_username(username, report, output):
 @click.option("--region", default="VN", help="Default region (e.g. VN, US, GB)")
 @click.option("--report", is_flag=True, help="Save HTML+JSON report")
 @click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
-def cmd_phone(phone_number, region, report, output):
+@click.option("--output-format", "out_fmt", type=click.Choice(["table", "json"]), default="table", help="Output format")
+def cmd_phone(phone_number, region, report, output, out_fmt):
     """Analyze a phone number (offline + public data).
 
     Example: python osint.py phone +84901234567
     Example: python osint.py phone 0901234567 --region VN
     """
-    print_banner()
-    
-    data = phone_lookup(phone_number)
+    if out_fmt == "table":
+        print_banner()
+
+    data = phone_lookup(phone_number, region=region)
     all_data = {"phone": data}
-    print_phone_results(data)
+    if out_fmt == "table":
+        print_phone_results(data)
+    elif out_fmt == "json":
+        print(json.dumps(all_data, indent=2, ensure_ascii=False, default=str))
 
     if report:
         save_report(phone_number, all_data, output)

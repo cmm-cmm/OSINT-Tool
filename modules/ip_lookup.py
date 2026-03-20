@@ -93,26 +93,33 @@ def get_headers_info(domain: str) -> dict:
     """Grab HTTP headers from target for tech fingerprinting and security scoring."""
     result = {}
     for scheme in ("https", "http"):
-        try:
-            resp = requests.head(
-                f"{scheme}://{domain}", headers=HEADERS, timeout=8,
-                allow_redirects=True, verify=True
-            )
-            interesting = [
-                "server", "x-powered-by", "x-generator", "cf-ray",
-                "x-frame-options", "strict-transport-security",
-                "content-security-policy", "x-content-type-options",
-                "referrer-policy", "permissions-policy", "x-xss-protection",
-            ]
-            for h in interesting:
-                if h in resp.headers:
-                    result[h] = resp.headers[h]
-            result["_status_code"] = resp.status_code
-            result["_final_url"] = str(resp.url)
-            result["_scheme"] = scheme
-            break
-        except Exception:
-            continue
+        for verify_ssl in (True, False):
+            try:
+                resp = requests.head(
+                    f"{scheme}://{domain}", headers=HEADERS, timeout=8,
+                    allow_redirects=True, verify=verify_ssl
+                )
+                interesting = [
+                    "server", "x-powered-by", "x-generator", "cf-ray",
+                    "x-frame-options", "strict-transport-security",
+                    "content-security-policy", "x-content-type-options",
+                    "referrer-policy", "permissions-policy", "x-xss-protection",
+                ]
+                for h in interesting:
+                    if h in resp.headers:
+                        result[h] = resp.headers[h]
+                result["_status_code"] = resp.status_code
+                result["_final_url"] = str(resp.url)
+                result["_scheme"] = scheme
+                if not verify_ssl:
+                    result["_ssl_warning"] = "SSL certificate verification skipped"
+                return result
+            except requests.exceptions.SSLError:
+                if verify_ssl:
+                    continue  # retry without SSL verification
+                break
+            except Exception:
+                break
     return result
 
 
@@ -161,18 +168,24 @@ def detect_tech_stack(domain: str, existing_headers: dict = None) -> dict:
     # Try to fetch HTML body
     body = ""
     for scheme in ("https", "http"):
-        try:
-            resp = requests.get(
-                f"{scheme}://{domain}", headers=HEADERS, timeout=8,
-                allow_redirects=True, verify=True
-            )
-            body = resp.text.lower()[:50000]  # cap at 50KB
-            # merge any additional response headers
-            for h in resp.headers:
-                headers_lower.setdefault(h.lower(), resp.headers[h].lower())
+        for verify_ssl in (True, False):
+            try:
+                resp = requests.get(
+                    f"{scheme}://{domain}", headers=HEADERS, timeout=8,
+                    allow_redirects=True, verify=verify_ssl
+                )
+                body = resp.text.lower()[:50000]  # cap at 50KB
+                for h in resp.headers:
+                    headers_lower.setdefault(h.lower(), resp.headers[h].lower())
+                break
+            except requests.exceptions.SSLError:
+                if verify_ssl:
+                    continue
+                break
+            except Exception:
+                break
+        if body:
             break
-        except Exception:
-            continue
 
     combined = body + " " + " ".join(headers_lower.values())
 

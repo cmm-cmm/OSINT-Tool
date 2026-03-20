@@ -3,6 +3,7 @@ WHOIS & DNS Enumeration Module
 """
 import asyncio
 import socket
+import threading
 import whois
 import dns.resolver
 import dns.reversename
@@ -27,10 +28,30 @@ COMMON_SUBDOMAINS = [
 ]
 
 
-def whois_lookup(target: str) -> dict:
+def whois_lookup(target: str, timeout: int = 15) -> dict:
     result = {"target": target, "whois": {}, "error": None}
-    try:
-        w = whois.whois(target)
+    container = {}
+
+    def _do_whois():
+        try:
+            container["data"] = whois.whois(target)
+        except Exception as e:
+            container["error"] = str(e)
+
+    t = threading.Thread(target=_do_whois, daemon=True)
+    t.start()
+    t.join(timeout)
+
+    if t.is_alive():
+        result["error"] = f"WHOIS timed out after {timeout}s"
+        return result
+
+    if "error" in container:
+        result["error"] = container["error"]
+        return result
+
+    w = container.get("data")
+    if w:
         result["whois"] = {
             "domain_name": w.domain_name,
             "registrar": w.registrar,
@@ -46,8 +67,6 @@ def whois_lookup(target: str) -> dict:
             "city": w.city,
             "address": w.address,
         }
-    except Exception as e:
-        result["error"] = str(e)
     return result
 
 
@@ -158,7 +177,7 @@ def subdomain_enum(domain: str) -> dict:
     # ── Step 2: Async DNS resolution ──────────────────────────────────────
     async def _resolve(sub: str) -> dict | None:
         fqdn = f"{sub}.{domain}"
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         resolver = dns.resolver.Resolver()
         resolver.timeout = 2
         resolver.lifetime = 2

@@ -208,7 +208,8 @@ def check_hibp_email(email: str, api_key: str | None) -> dict:
 # ─── Investigation dorks ──────────────────────────────────────────────────
 
 def _breach_dorks(query: str) -> list:
-    enc = query.replace(" ", "+").replace("@", "%40").replace("_", "%5F")
+    from urllib.parse import quote_plus
+    enc = quote_plus(query)
     return [
         {
             "label": "HaveIBeenPwned (tra cứu thủ công)",
