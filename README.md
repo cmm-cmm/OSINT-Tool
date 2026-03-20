@@ -83,19 +83,39 @@ python osint.py full "Nguyen Van A" --type person
 
 ---
 
+## Đánh giá nhanh & đề xuất cải tiến
+
+Sau khi rà soát codebase hiện tại, đây là các cải tiến nên ưu tiên:
+
+1. **Bổ sung test tự động cơ bản** cho các nhánh CLI quan trọng như `domain`, `email`, `phone` và `report` để tránh hồi quy.
+2. **Chuẩn hóa HTTP client** dùng chung timeout, retry và xử lý lỗi thay vì để từng module tự gọi `requests.get(...)`.
+3. **Tách nhỏ `modules/report.py` và `modules/social_recon.py`** vì đây là hai file lớn, đang ôm nhiều trách nhiệm nên khó bảo trì.
+4. **Bổ sung logging mức debug** cho các API/public source bị lỗi để người dùng hiểu vì sao dữ liệu thiếu hoặc trả về `"N/A"`.
+5. **Thêm cache/rate-limit** cho các nguồn public như `ip-api`, `crt.sh` hoặc endpoint tra cứu profile để giảm timeout và giới hạn truy cập.
+
+### Cải tiến đã áp dụng trong lần rà soát này
+
+- Siết chặt kiểm tra IPv4 trong CLI: tool không còn chấp nhận các địa chỉ không hợp lệ như `999.999.999.999`.
+
+---
+
 ## Cấu trúc thư mục
 
 ```
-CheckTool/
+OSINT-Tool/
 ├── osint.py              # CLI chính
 ├── requirements.txt
 ├── README.md
 └── modules/
+    ├── breach_check.py
     ├── whois_lookup.py
     ├── email_recon.py
     ├── username_search.py
     ├── ip_lookup.py
     ├── phone_lookup.py
     ├── google_dorks.py
+    ├── social_recon.py
+    ├── website_contacts.py
+    ├── youtube_recon.py
     └── report.py
 ```
