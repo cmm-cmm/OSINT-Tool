@@ -2,6 +2,7 @@
 Report Generator Module
 Exports all gathered intelligence to HTML and JSON formats.
 """
+import html as _html
 import json
 import csv
 import io
@@ -10,6 +11,12 @@ from pathlib import Path
 from rich.console import Console
 
 console = Console()
+
+
+def _e(value) -> str:
+    """Escape HTML entities in plain text values to prevent XSS."""
+    return _html.escape(str(value), quote=True)
+
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="vi">
@@ -55,13 +62,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 
 def _section(title: str, content: str) -> str:
-    return f'<div class="section"><h2>{title}</h2>{content}</div>'
+    return f'<div class="section"><h2>{_e(title)}</h2>{content}</div>'
 
 
 def _table(rows: list, headers: list = None) -> str:
     html = "<table>"
     if headers:
-        html += "<tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>"
+        html += "<tr>" + "".join(f"<th>{_e(h)}</th>" for h in headers) + "</tr>"
     for row in rows:
         html += "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
     html += "</table>"
@@ -69,7 +76,7 @@ def _table(rows: list, headers: list = None) -> str:
 
 
 def _kv_table(data: dict) -> str:
-    rows = [(k, v) for k, v in data.items() if v]
+    rows = [(_e(k), _e(str(v))) for k, v in data.items() if v]
     return _table(rows)
 
 
@@ -201,13 +208,13 @@ def build_html_report(target: str, all_data: dict) -> str:
     # Email
     if "email" in all_data:
         e = all_data["email"]
-        summary = f"<p>Email: <strong>{e.get('email')}</strong> &nbsp; Domain: {e.get('domain')}</p>"
+        summary = f"<p>Email: <strong>{_e(e.get('email', ''))}</strong> &nbsp; Domain: {_e(e.get('domain', ''))}</p>"
         g = e.get("gravatar", {})
         if g.get("found"):
-            summary += f'<p class="found">✓ Gravatar: {g.get("display_name", "")} — <a href="{g.get("profile_url","")}">Profile</a></p>'
+            summary += f'<p class="found">✓ Gravatar: {_e(g.get("display_name", ""))} — <a href="{_e(g.get("profile_url",""))}">Profile</a></p>'
         hibp = e.get("hibp", {})
         if hibp.get("breaches"):
-            rows = [(b["name"], b["date"], f"{b['pwn_count']:,}", ", ".join(b["data_classes"][:4]))
+            rows = [(_e(b["name"]), _e(b["date"]), f"{b['pwn_count']:,}", _e(", ".join(b["data_classes"][:4])))
                     for b in hibp["breaches"]]
             summary += '<p class="danger">⚠ Found in data breaches:</p>'
             summary += _table(rows, ["Breach", "Date", "Records", "Data Types"])
@@ -220,9 +227,9 @@ def build_html_report(target: str, all_data: dict) -> str:
             summary += '<br><strong>Hunter.io:</strong>'
             h_rows = []
             if hunter.get("organization"):
-                h_rows.append(("Organization", hunter["organization"]))
+                h_rows.append(("Organization", _e(hunter["organization"])))
             if hunter.get("pattern"):
-                h_rows.append(("Email Pattern", f'<code>{hunter["pattern"]}@{hunter.get("domain","")}</code>'))
+                h_rows.append(("Email Pattern", f'<code>{_e(hunter["pattern"])}@{_e(hunter.get("domain",""))}</code>'))
             h_rows.append(("Total Emails Found", str(hunter.get("total_emails", 0))))
             if hunter.get("webmail"):
                 h_rows.append(("Type", "Webmail provider"))
@@ -232,11 +239,11 @@ def build_html_report(target: str, all_data: dict) -> str:
             if hunter.get("emails"):
                 em_rows = [
                     (
-                        em.get("value", ""),
-                        em.get("type", ""),
+                        _e(em.get("value", "")),
+                        _e(em.get("type", "")),
                         f'{em.get("confidence","")}%' if em.get("confidence") is not None else "—",
-                        f'{em.get("first_name","")} {em.get("last_name","")}'.strip() or "—",
-                        em.get("position") or "—",
+                        _e(f'{em.get("first_name","")} {em.get("last_name","")}'.strip() or "—"),
+                        _e(em.get("position") or "—"),
                     )
                     for em in hunter["emails"][:10]
                 ]
@@ -247,7 +254,7 @@ def build_html_report(target: str, all_data: dict) -> str:
         if emailrep and emailrep.get("success"):
             rep = emailrep.get("reputation", "none")
             rep_cls = {"high": "found", "medium": "warning", "low": "danger", "none": ""}.get(rep, "")
-            summary += f'<br><strong>EmailRep.io:</strong> Reputation: <span class="{rep_cls}">{rep}</span>'
+            summary += f'<br><strong>EmailRep.io:</strong> Reputation: <span class="{rep_cls}">{_e(rep)}</span>'
             flags = []
             if emailrep.get("suspicious"):         flags.append('<span class="danger">suspicious</span>')
             if emailrep.get("blacklisted"):        flags.append('<span class="danger">blacklisted</span>')
@@ -260,7 +267,7 @@ def build_html_report(target: str, all_data: dict) -> str:
                 summary += " | " + " | ".join(flags)
             summary += f' | {emailrep.get("references", 0)} references'
             if emailrep.get("profiles"):
-                summary += f'<br>Profiles: {", ".join(emailrep["profiles"][:8])}'
+                summary += f'<br>Profiles: {_e(", ".join(emailrep["profiles"][:8]))}'
 
         sections.append(_section("Email Intelligence", summary))
 
@@ -467,10 +474,10 @@ def build_html_report(target: str, all_data: dict) -> str:
         total_pastes = summary.get("total_pastes", 0)
         status_cls = "danger" if total > 0 else "found"
         status_label = f"⚠ Tìm thấy ~{total} vụ rò rỉ" if total > 0 else "✓ Không tìm thấy"
-        html = f'<p class="{status_cls}"><strong>{status_label}</strong></p>'
+        html = f'<p class="{status_cls}"><strong>{_e(status_label)}</strong></p>'
         srcs = summary.get("sources_checked", [])
         if srcs:
-            html += f'<p class="meta">Nguồn đã kiểm tra: {", ".join(srcs)}</p>'
+            html += f'<p class="meta">Nguồn đã kiểm tra: {_e(", ".join(srcs))}</p>'
 
         # LeakCheck
         lc = br.get("leakcheck", {}) or {}
@@ -478,11 +485,11 @@ def build_html_report(target: str, all_data: dict) -> str:
         if lc.get("found"):
             sources = lc.get("sources", [])
             html += f'<p class="danger">⚠ Xuất hiện trong {len(sources)} nguồn</p>'
-            html += "<ul>" + "".join(f"<li>{s}</li>" for s in sources) + "</ul>"
+            html += "<ul>" + "".join(f"<li>{_e(s)}</li>" for s in sources) + "</ul>"
         elif lc.get("note"):
-            html += f'<p class="meta">{lc["note"]}</p>'
+            html += f'<p class="meta">{_e(lc["note"])}</p>'
         elif lc.get("error"):
-            html += f'<p class="warning">Lỗi: {lc["error"]}</p>'
+            html += f'<p class="warning">Lỗi: {_e(lc["error"])}</p>'
         else:
             html += '<p class="found">✓ Không tìm thấy trong LeakCheck.io</p>'
 
@@ -490,7 +497,7 @@ def build_html_report(target: str, all_data: dict) -> str:
         bd = br.get("breachdirectory", {}) or {}
         html += "<h3 style='color:#79c0ff;margin:12px 0 6px'>② BreachDirectory (RapidAPI)</h3>"
         if bd.get("note"):
-            html += "<br>".join(f'<p class="meta">{line}</p>' for line in bd["note"].splitlines())
+            html += "<br>".join(f'<p class="meta">{_e(line)}</p>' for line in bd["note"].splitlines())
         elif bd.get("found"):
             size = bd.get("size", len(bd.get("result", [])))
             html += f'<p class="danger">⚠ {size} bản ghi bị lộ</p>'
@@ -500,11 +507,11 @@ def build_html_report(target: str, all_data: dict) -> str:
                 src = src_raw[0] if isinstance(src_raw, list) and src_raw else str(src_raw or "?")
                 fields = ", ".join(entry.get("fields", [])) or "—"
                 h_type = entry.get("password_type", "—")
-                rows.append((src, fields, h_type))
+                rows.append((_e(src), _e(fields), _e(h_type)))
             if rows:
                 html += _table(rows, ["Nguồn (Source)", "Dữ liệu bị lộ", "Hash type"])
         elif bd.get("error"):
-            html += f'<p class="warning">Lỗi: {bd["error"]}</p>'
+            html += f'<p class="warning">Lỗi: {_e(bd["error"])}</p>'
         else:
             html += '<p class="found">✓ Không tìm thấy</p>'
 
@@ -512,14 +519,14 @@ def build_html_report(target: str, all_data: dict) -> str:
         hibp = br.get("hibp", {}) or {}
         html += "<h3 style='color:#79c0ff;margin:12px 0 6px'>③ HaveIBeenPwned</h3>"
         if hibp.get("note"):
-            html += "<br>".join(f'<p class="meta">{line}</p>' for line in hibp["note"].splitlines())
+            html += "<br>".join(f'<p class="meta">{_e(line)}</p>' for line in hibp["note"].splitlines())
         elif hibp.get("breaches"):
             breaches = hibp["breaches"]
             html += f'<p class="danger">⚠ Có trong {len(breaches)} vụ rò rỉ:</p>'
             rows = [
-                (b.get("name", "?"), b.get("date", "?"),
+                (_e(b.get("name", "?")), _e(b.get("date", "?")),
                  f'{b["pwn_count"]:,}' if b.get("pwn_count") else "?",
-                 ", ".join((b.get("data_classes") or [])[:4]))
+                 _e(", ".join((b.get("data_classes") or [])[:4])))
                 for b in breaches
             ]
             html += _table(rows, ["Tên vụ rò rỉ", "Ngày", "Số bản ghi", "Loại dữ liệu"])
@@ -535,7 +542,7 @@ def build_html_report(target: str, all_data: dict) -> str:
             if pw.get("exposed"):
                 html += f'<p class="danger">⚠ Mật khẩu đã bị lộ {pw["count"]:,} lần!</p>'
             elif pw.get("error"):
-                html += f'<p class="warning">Lỗi: {pw["error"]}</p>'
+                html += f'<p class="warning">Lỗi: {_e(pw["error"])}</p>'
             else:
                 html += '<p class="found">✓ Mật khẩu chưa xuất hiện trong rò rỉ đã biết</p>'
 
@@ -543,12 +550,12 @@ def build_html_report(target: str, all_data: dict) -> str:
         if br.get("dorks"):
             html += "<br><strong>Tra cứu thêm:</strong><ul>"
             html += "".join(
-                f'<li><a href="{d["url"]}" target="_blank">{d["label"]}</a></li>'
+                f'<li><a href="{_e(d["url"])}" target="_blank">{_e(d["label"])}</a></li>'
                 for d in br["dorks"]
             )
             html += "</ul>"
 
-        sections.append(_section(f"Breach / Data Leak Check — {br.get('target','')}", html))
+        sections.append(_section(f"Breach / Data Leak Check — {_e(br.get('target',''))}", html))
 
     # TikTok
     if "tiktok" in all_data:
@@ -829,7 +836,7 @@ def build_html_report(target: str, all_data: dict) -> str:
 
     content = "\n".join(sections)
     return HTML_TEMPLATE.format(
-        target=target,
+        target=_e(target),
         timestamp=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         content=content,
     )

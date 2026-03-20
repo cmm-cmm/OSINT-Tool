@@ -102,7 +102,7 @@ def _parse_cert(cert_raw: dict) -> dict:
     except Exception:
         parsed["not_after"] = None
 
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     if parsed.get("not_after"):
         delta = parsed["not_after"] - now
         parsed["days_until_expiry"] = delta.days
@@ -142,10 +142,10 @@ def _check_hsts(hostname: str, timeout: int = 8) -> dict:
             result["raw"] = hsts
             for part in hsts.split(";"):
                 part = part.strip().lower()
-                if part.startswith("max-age="):
+                if part.startswith("max-age"):
                     try:
-                        result["max_age"] = int(part.split("=")[1])
-                    except ValueError:
+                        result["max_age"] = int(part.split("=", 1)[1].strip())
+                    except (ValueError, IndexError):
                         pass
                 elif part == "includesubdomains":
                     result["include_subdomains"] = True

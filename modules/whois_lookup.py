@@ -2,6 +2,7 @@
 WHOIS & DNS Enumeration Module
 """
 import asyncio
+import ipaddress
 import socket
 import threading
 import whois
@@ -86,12 +87,14 @@ def dns_enum(target: str) -> dict:
         except Exception:
             pass
 
-    # Reverse DNS for IP
+    # Reverse DNS for IP addresses (both IPv4 and IPv6)
     try:
-        if all(c.isdigit() or c == "." for c in target):
-            rev = dns.reversename.from_address(target)
-            answers = resolver.resolve(rev, "PTR")
-            result["records"]["PTR"] = [str(r) for r in answers]
+        ipaddress.ip_address(target)
+        rev = dns.reversename.from_address(target)
+        answers = resolver.resolve(rev, "PTR")
+        result["records"]["PTR"] = [str(r) for r in answers]
+    except ValueError:
+        pass  # Not an IP address
     except Exception:
         pass
 
