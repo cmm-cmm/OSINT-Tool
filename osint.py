@@ -282,6 +282,45 @@ def cmd_person(name, do_dorks, report, output):
         save_report(name, all_data, output)
 
 
+@cli.command("breach")
+@click.argument("target")
+@click.option("--password", default=None, metavar="PASSWORD",
+              help="Mật khẩu cần kiểm tra qua HIBP Pwned Passwords (không lưu/log)")
+@click.option("--hibp-key", envvar="HIBP_API_KEY", default=None,
+              help="HaveIBeenPwned API key (env: HIBP_API_KEY)")
+@click.option("--breachdir-key", envvar="BREACHDIRECTORY_KEY", default=None,
+              help="BreachDirectory RapidAPI key (env: BREACHDIRECTORY_KEY)")
+@click.option("--report", is_flag=True, help="Lưu báo cáo HTML+JSON")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."),
+              help="Thư mục lưu báo cáo")
+def cmd_breach(target, password, hibp_key, breachdir_key, report, output):
+    """Kiểm tra email/username trong các vụ rò rỉ dữ liệu.
+
+    Nguồn miễn phí (không cần key):
+      - LeakCheck.io public endpoint
+      - HIBP Pwned Passwords (kiểm tra mật khẩu qua --password)
+
+    Nguồn miễn phí sau khi đăng ký:
+      - BreachDirectory (RapidAPI free tier — env: BREACHDIRECTORY_KEY)
+
+    Tùy chọn (có phí nhỏ):
+      - HaveIBeenPwned email+paste (env: HIBP_API_KEY)
+
+    \b
+    Ví dụ:
+      python osint.py breach user@example.com
+      python osint.py breach user@example.com --password "mympassword"
+      python osint.py breach johndoe --report
+    """
+    from modules.breach_check import breach_check, print_breach_results
+    print_banner()
+    console.print(f"[dim]Đang kiểm tra '{target}' trong các nguồn rò rỉ dữ liệu...[/dim]")
+    data = breach_check(target, password=password, hibp_key=hibp_key, breachdir_key=breachdir_key)
+    print_breach_results(data)
+    if report:
+        save_report(target, {"breach": data}, output)
+
+
 @cli.command("social")
 @click.option("--facebook", "fb_id", default=None, metavar="ID_OR_URL",
               help="Facebook username, profile URL, or numeric ID")
@@ -410,7 +449,8 @@ def cmd_menu():
         ("4", "Phone Number Analysis",            "phone"),
         ("5", "Person / Organization Dorks",      "person"),
         ("6", "Social Media Recon (FB / TikTok)", "social"),
-        ("7", "Full Scan + Report",               "full"),
+        ("7", "Breach / Data Leak Check",         "breach"),
+        ("8", "Full Scan + Report",               "full"),
         ("0", "Exit",                             None),
     ]
 
@@ -501,6 +541,21 @@ def cmd_menu():
                 print_tiktok_results(tt_data)
             if do_report:
                 save_report(fb_id or tt_user, all_data, output_dir)
+
+        elif mode == "breach":
+            from modules.breach_check import breach_check, print_breach_results
+            tgt = Prompt.ask("Email hoặc username cần kiểm tra")
+            check_pw = Confirm.ask("Kiểm tra mật khẩu qua HIBP Pwned Passwords?", default=False)
+            pw = None
+            if check_pw:
+                import getpass
+                pw = getpass.getpass("  Nhập mật khẩu (không hiển thị): ")
+            bd_key = os.getenv("BREACHDIRECTORY_KEY") or None
+            console.print("[dim]Đang kiểm tra các nguồn rò rỉ dữ liệu...[/dim]")
+            br_data = breach_check(tgt, password=pw, hibp_key=hibp_key, breachdir_key=bd_key)
+            print_breach_results(br_data)
+            if do_report:
+                save_report(tgt, {"breach": br_data}, output_dir)
 
         elif mode == "full":
             target = Prompt.ask("Target")

@@ -240,6 +240,97 @@ def build_html_report(target: str, all_data: dict) -> str:
             html += "</ul>"
         sections.append(_section("Facebook Intelligence", html))
 
+    # Breach Check
+    if "breach" in all_data:
+        br = all_data["breach"]
+        summary = br.get("summary", {})
+        total = summary.get("total_breaches", 0)
+        total_pastes = summary.get("total_pastes", 0)
+        status_cls = "danger" if total > 0 else "found"
+        status_label = f"⚠ Tìm thấy ~{total} vụ rò rỉ" if total > 0 else "✓ Không tìm thấy"
+        html = f'<p class="{status_cls}"><strong>{status_label}</strong></p>'
+        srcs = summary.get("sources_checked", [])
+        if srcs:
+            html += f'<p class="meta">Nguồn đã kiểm tra: {", ".join(srcs)}</p>'
+
+        # LeakCheck
+        lc = br.get("leakcheck", {}) or {}
+        html += "<h3 style='color:#79c0ff;margin:12px 0 6px'>① LeakCheck.io (miễn phí)</h3>"
+        if lc.get("found"):
+            sources = lc.get("sources", [])
+            html += f'<p class="danger">⚠ Xuất hiện trong {len(sources)} nguồn</p>'
+            html += "<ul>" + "".join(f"<li>{s}</li>" for s in sources) + "</ul>"
+        elif lc.get("note"):
+            html += f'<p class="meta">{lc["note"]}</p>'
+        elif lc.get("error"):
+            html += f'<p class="warning">Lỗi: {lc["error"]}</p>'
+        else:
+            html += '<p class="found">✓ Không tìm thấy trong LeakCheck.io</p>'
+
+        # BreachDirectory
+        bd = br.get("breachdirectory", {}) or {}
+        html += "<h3 style='color:#79c0ff;margin:12px 0 6px'>② BreachDirectory (RapidAPI)</h3>"
+        if bd.get("note"):
+            html += "<br>".join(f'<p class="meta">{line}</p>' for line in bd["note"].splitlines())
+        elif bd.get("found"):
+            size = bd.get("size", len(bd.get("result", [])))
+            html += f'<p class="danger">⚠ {size} bản ghi bị lộ</p>'
+            rows = []
+            for entry in bd.get("result", [])[:20]:
+                src_raw = entry.get("sources", [])
+                src = src_raw[0] if isinstance(src_raw, list) and src_raw else str(src_raw or "?")
+                fields = ", ".join(entry.get("fields", [])) or "—"
+                h_type = entry.get("password_type", "—")
+                rows.append((src, fields, h_type))
+            if rows:
+                html += _table(rows, ["Nguồn (Source)", "Dữ liệu bị lộ", "Hash type"])
+        elif bd.get("error"):
+            html += f'<p class="warning">Lỗi: {bd["error"]}</p>'
+        else:
+            html += '<p class="found">✓ Không tìm thấy</p>'
+
+        # HIBP
+        hibp = br.get("hibp", {}) or {}
+        html += "<h3 style='color:#79c0ff;margin:12px 0 6px'>③ HaveIBeenPwned</h3>"
+        if hibp.get("note"):
+            html += "<br>".join(f'<p class="meta">{line}</p>' for line in hibp["note"].splitlines())
+        elif hibp.get("breaches"):
+            breaches = hibp["breaches"]
+            html += f'<p class="danger">⚠ Có trong {len(breaches)} vụ rò rỉ:</p>'
+            rows = [
+                (b.get("name", "?"), b.get("date", "?"),
+                 f'{b["pwn_count"]:,}' if b.get("pwn_count") else "?",
+                 ", ".join((b.get("data_classes") or [])[:4]))
+                for b in breaches
+            ]
+            html += _table(rows, ["Tên vụ rò rỉ", "Ngày", "Số bản ghi", "Loại dữ liệu"])
+        else:
+            html += '<p class="found">✓ Không tìm thấy trong HIBP breaches</p>'
+        if (hibp.get("pastes") or []):
+            html += f'<p class="warning">⚠ Xuất hiện trong {len(hibp["pastes"])} paste(s) công khai</p>'
+
+        # Pwned Password
+        pw = br.get("pwned_password")
+        if pw is not None:
+            html += "<h3 style='color:#79c0ff;margin:12px 0 6px'>④ HIBP Pwned Passwords</h3>"
+            if pw.get("exposed"):
+                html += f'<p class="danger">⚠ Mật khẩu đã bị lộ {pw["count"]:,} lần!</p>'
+            elif pw.get("error"):
+                html += f'<p class="warning">Lỗi: {pw["error"]}</p>'
+            else:
+                html += '<p class="found">✓ Mật khẩu chưa xuất hiện trong rò rỉ đã biết</p>'
+
+        # Dorks
+        if br.get("dorks"):
+            html += "<br><strong>Tra cứu thêm:</strong><ul>"
+            html += "".join(
+                f'<li><a href="{d["url"]}" target="_blank">{d["label"]}</a></li>'
+                for d in br["dorks"]
+            )
+            html += "</ul>"
+
+        sections.append(_section(f"Breach / Data Leak Check — {br.get('target','')}", html))
+
     # TikTok
     if "tiktok" in all_data:
         tt = all_data["tiktok"]
