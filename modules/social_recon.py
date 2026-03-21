@@ -6,11 +6,17 @@ For security research and investigation purposes only.
 """
 import json
 import re
+import time
 import html as _html_lib
+from datetime import datetime, timezone
+from urllib.parse import quote
 import requests
 from rich.console import Console
 
 console = Console()
+
+FACEBOOK_GRAPH_API_VERSION = "v21.0"  # Update when Facebook retires this version
+SCRAPER3_DELAY = 0.5  # Seconds between sequential RapidAPI calls to avoid HTTP 429
 
 # Desktop User-Agent (for OG/JSON extraction)
 HEADERS = {
@@ -30,13 +36,15 @@ FB_CRAWLER_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
+# OG meta tag patterns: allow arbitrary attributes between property/name and content
+# re.DOTALL lets [^>]* match across newlines in multi-line meta tags
 _OG_RE = re.compile(
-    r'<meta\s+(?:property|name)=["\']og:([^"\']+)["\']\s+content=["\']([^"\']*)["\']',
-    re.IGNORECASE,
+    r'<meta\s+(?:property|name)=["\']og:([^"\']+)["\'][^>]*?\s+content=["\']([^"\']*)["\']',
+    re.IGNORECASE | re.DOTALL,
 )
 _OG_RE2 = re.compile(
-    r'<meta\s+content=["\']([^"\']*)["\'\s]+(?:property|name)=["\']og:([^"\']+)["\']',
-    re.IGNORECASE,
+    r'<meta\s+content=["\']([^"\']*)["\'][^>]*?\s+(?:property|name)=["\']og:([^"\']+)["\']',
+    re.IGNORECASE | re.DOTALL,
 )
 
 # Patterns for IDs embedded in Facebook's JS bundles
@@ -69,14 +77,23 @@ def _extract_og(html: str) -> dict:
 
 
 def _normalize_fb_id(identifier: str) -> str:
-    """Extract Facebook username or numeric ID from a URL or bare string."""
-    if "facebook.com/" in identifier:
-        identifier = identifier.rstrip("/").split("facebook.com/")[-1]
-        if identifier.startswith("profile.php"):
-            m = re.search(r'id=(\d+)', identifier)
-            identifier = m.group(1) if m else identifier
+    """Extract Facebook username or numeric ID from a URL or bare string.
+
+    Handles: facebook.com, m.facebook.com, mbasic.facebook.com,
+             web.facebook.com, fb.com — with or without https://.
+    """
+    m = re.search(
+        r'(?:https?://)?(?:www\.)?(?:m\.|mbasic\.|web\.)?(?:facebook\.com|fb\.com)/([^#]+?)(?:#|$)',
+        identifier,
+        re.IGNORECASE,
+    )
+    if m:
+        identifier = m.group(1).rstrip("/")
+        if re.match(r'profile\.php', identifier, re.IGNORECASE):
+            id_m = re.search(r'id=(\d+)', identifier)
+            identifier = id_m.group(1) if id_m else identifier
         else:
-            identifier = identifier.split("?")[0].split("#")[0]
+            identifier = identifier.split("?")[0]
     return identifier.lstrip("@").strip()
 
 
@@ -103,26 +120,31 @@ def _parse_og_description(desc: str) -> dict:
     Examples:
       "Coca-Cola. 107,673,233 likes · 1,686 talking about this. Page description..."
       "johndoe. 2,543 followers · 12 following. Photos and posts."
+      "1.234.567 người theo dõi · 890 đang nói về điều này."  ← Vietnamese format
     """
     info = {"likes": None, "followers_og": None, "following": None, "talking_about": None, "text": desc}
 
-    m = re.search(r'([\d,]+)\s*likes?\s*[·•]\s*([\d,]+)\s*talking about this', desc, re.IGNORECASE)
-    if m:
-        info["likes"] = m.group(1).replace(",", "")
-        info["talking_about"] = m.group(2).replace(",", "")
+    def _normalize_num(s: str) -> str:
+        """Normalize both EN (1,234) and VN (1.234) thousands separators."""
+        return re.sub(r'[,.]', '', s)
 
-    m = re.search(r'([\d,]+)\s*followers?\s*[·•]\s*([\d,]+)\s*following', desc, re.IGNORECASE)
+    m = re.search(r'([\d,.]+)\s*likes?\s*[·•]\s*([\d,.]+)\s*talking about this', desc, re.IGNORECASE)
     if m:
-        info["followers_og"] = m.group(1).replace(",", "")
-        info["following"] = m.group(2).replace(",", "")
+        info["likes"] = _normalize_num(m.group(1))
+        info["talking_about"] = _normalize_num(m.group(2))
+
+    m = re.search(r'([\d,.]+)\s*followers?\s*[·•]\s*([\d,.]+)\s*following', desc, re.IGNORECASE)
+    if m:
+        info["followers_og"] = _normalize_num(m.group(1))
+        info["following"] = _normalize_num(m.group(2))
 
     if not info["followers_og"]:
-        m = re.search(r'([\d,]+)\s*(?:followers?|ng\u01b0\u1eddi theo d\u00f5i)', desc, re.IGNORECASE)
+        m = re.search(r'([\d,.]+)\s*(?:followers?|ng\u01b0\u1eddi theo d\u00f5i)', desc, re.IGNORECASE)
         if m:
-            info["followers_og"] = m.group(1).replace(",", "")
+            info["followers_og"] = _normalize_num(m.group(1))
 
     # Strip engagement numbers to get the actual description text
-    clean = re.sub(r'[\d,]+\s*(?:likes?|followers?|following|talking about this)[^\n.]*[·•]?\s*', '', desc).strip()
+    clean = re.sub(r'[\d,.]+\s*(?:likes?|followers?|following|talking about this|người theo dõi|đang theo dõi)[^\n.]*[·•]?\s*', '', desc).strip()
     clean = re.sub(r'^[^\s.]{1,80}\.\s*', '', clean).strip()  # strip leading "PageName. " prefix
     clean = re.sub(r'^[\s.·•,]+', '', clean).strip()           # strip any remaining leading punctuation
     if clean and len(clean) > 5:
@@ -134,7 +156,7 @@ def _try_graph_api(result: dict, identifier: str):
     """Try Facebook Graph API without access token — returns limited data for public pages."""
     try:
         r = requests.get(
-            f"https://graph.facebook.com/v21.0/{identifier}",
+            f"https://graph.facebook.com/{FACEBOOK_GRAPH_API_VERSION}/{identifier}",
             params={
                 "fields": (
                     "name,category,description,about,fan_count,followers_count,"
@@ -399,14 +421,13 @@ def _try_facebook_scraper3_posts(identifier: str, api_key: str, result: dict):
         posts_raw = r.json().get("results", [])
         if not posts_raw:
             return
-        import datetime
         result["recent_posts"] = []
         total_reactions = 0
         total_comments = 0
         for p in posts_raw:
             ts = p.get("timestamp")
             date_str = (
-                datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
                 if ts else None
             )
             post = {
@@ -454,14 +475,13 @@ def _try_facebook_scraper3_search_posts(identifier: str, api_key: str, result: d
         # Only populate if we don't already have posts
         if result.get("recent_posts"):
             return
-        import datetime
         result["recent_posts"] = []
         total_reactions = 0
         total_comments = 0
         for p in posts_raw:
             ts = p.get("timestamp")
             date_str = (
-                datetime.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
                 if ts else None
             )
             author = p.get("author") or {}
@@ -630,9 +650,13 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
     # ── Facebook Scraper3 RapidAPI (optional enrichment) ─────────────────
     if fb_scraper_key:
         _try_facebook_scraper3(identifier, fb_scraper_key, result)
+        time.sleep(SCRAPER3_DELAY)
         _try_facebook_scraper3_page_details(identifier, fb_scraper_key, result)
+        time.sleep(SCRAPER3_DELAY)
         _try_facebook_scraper3_people(identifier, fb_scraper_key, result)
+        time.sleep(SCRAPER3_DELAY)
         _try_facebook_scraper3_posts(identifier, fb_scraper_key, result)
+        time.sleep(SCRAPER3_DELAY)
         _try_facebook_scraper3_search_posts(identifier, fb_scraper_key, result)
 
     # ── Infer account type ─────────────────────────────────────────────────
@@ -700,8 +724,8 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
 
     # ── Investigation dorks ─────────────────────────────────────────────────
     q = result.get("display_name") or identifier
-    enc_q = q.replace(" ", "+")
-    enc_id = identifier.replace(" ", "+")
+    enc_q = quote(q)
+    enc_id = quote(identifier)
     result["dorks"] = [
         {
             "label": "Profile on Facebook",
@@ -727,7 +751,7 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
             "label": "Reverse image search profile pic",
             "query": "Find accounts sharing the same profile picture",
             "url": (
-                f"https://www.google.com/searchbyimage?image_url={result['profile_pic']}"
+                f"https://www.google.com/searchbyimage?image_url={quote(result['profile_pic'])}"
                 if result.get("profile_pic")
                 else "https://images.google.com/"
             ),
@@ -959,22 +983,22 @@ def print_facebook_results(data: dict):
     # Engagement stats
     stats = []
     if data.get("follower_count"):
-        stats.append(f"[cyan]{int(data['follower_count']):,}[/cyan] followers" if data["follower_count"].isdigit()
+        stats.append(f"[cyan]{int(data['follower_count']):,}[/cyan] followers" if str(data["follower_count"]).isdigit()
                      else f"[cyan]{data['follower_count']}[/cyan] followers")
-    if data.get("friend_count"):
-        stats.append(f"[cyan]{data['friend_count']}[/cyan] friends")
-    if data.get("posts_count"):
-        stats.append(f"[cyan]{data['posts_count']}[/cyan] posts")
+    if data.get("following_count"):
+        stats.append(f"[cyan]{data['following_count']}[/cyan] following")
+    if data.get("likes_count"):
+        stats.append(f"[cyan]{data['likes_count']}[/cyan] likes")
+    if data.get("talking_about"):
+        stats.append(f"[cyan]{data['talking_about']}[/cyan] talking about this")
     if stats:
         console.print(f"  Stats        : {' | '.join(stats)}")
 
     # Identity fields
     if data.get("location"):
         console.print(f"  Location     : {data['location']}")
-    if data.get("hometown"):
-        console.print(f"  Hometown     : {data['hometown']}")
-    if data.get("work_education"):
-        console.print(f"  Work/Edu     : {data['work_education']}")
+    if data.get("address"):
+        console.print(f"  Address      : {data['address']}")
     if data.get("website"):
         console.print(f"  Website      : [cyan]{data['website']}[/cyan]")
     if data.get("email"):
@@ -983,8 +1007,6 @@ def print_facebook_results(data: dict):
         console.print(f"  Phone        : {data['phone']}")
     if data.get("founded"):
         console.print(f"  Founded      : {data['founded']}")
-    if data.get("joined"):
-        console.print(f"  Joined       : {data['joined']}")
 
     if data.get("description"):
         desc = data["description"][:200] + ("..." if len(data.get("description","")) > 200 else "")
@@ -1087,3 +1109,672 @@ def print_tiktok_results(data: dict):
         for d in data["dorks"]:
             console.print(f"    [dim]{d['label']}[/dim]: [cyan]{d['query']}[/cyan]")
             console.print(f"      [link={d['url']}][blue]Open in Google ↗[/blue][/link]")
+
+
+# ─────────────────────────────────────────────
+# Instagram Recon
+# ─────────────────────────────────────────────
+
+def instagram_recon(username: str, api_key: str = None) -> dict:
+    """Gather public Instagram profile info via RapidAPI instagram-scraper-api2."""
+    username = username.lstrip("@").strip()
+    result = {
+        "username": username,
+        "profile_url": f"https://www.instagram.com/{username}/",
+        "is_public": False,
+        "exists": False,
+        "data_sources": [],
+        "security_notes": [],
+        "dorks": _generate_ig_dorks(username),
+    }
+
+    if not api_key:
+        result["security_notes"].append("No Instagram API key — add INSTAGRAM_KEY to .env for live lookup")
+        return result
+
+    try:
+        url = "https://instagram-scraper-api2.p.rapidapi.com/v1/info"
+        headers = {
+            "x-rapidapi-key": api_key,
+            "x-rapidapi-host": "instagram-scraper-api2.p.rapidapi.com",
+        }
+        resp = requests.get(url, headers=headers, params={"username_or_id_or_url": username}, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json().get("data", {}) or {}
+            result["exists"] = True
+            result["is_public"] = not data.get("is_private", True)
+            result["data_sources"].append("instagram-scraper-api2")
+            result.update({
+                "user_id": str(data.get("id") or data.get("pk") or ""),
+                "full_name": data.get("full_name"),
+                "biography": data.get("biography"),
+                "follower_count": data.get("follower_count"),
+                "following_count": data.get("following_count"),
+                "media_count": data.get("media_count"),
+                "is_verified": data.get("is_verified", False),
+                "is_private": data.get("is_private", True),
+                "profile_pic": data.get("profile_pic_url_hd") or data.get("profile_pic_url"),
+                "external_url": data.get("external_url"),
+                "category": data.get("category_name"),
+                "is_business": data.get("is_business_account", False),
+                "public_email": data.get("public_email"),
+                "public_phone": data.get("public_phone_number"),
+                "city_name": data.get("city_name"),
+                "pronouns": data.get("pronouns", []),
+            })
+            if result["is_verified"]:
+                result["security_notes"].append("Verified account — high-value target")
+            if not result["is_public"]:
+                result["security_notes"].append("Private account — limited public data")
+            if result.get("public_email"):
+                result["security_notes"].append(f"Public email exposed: {result['public_email']}")
+        elif resp.status_code == 404:
+            result["security_notes"].append("Instagram account not found or suspended")
+        else:
+            result["security_notes"].append(f"API returned HTTP {resp.status_code}")
+    except Exception as e:
+        result["security_notes"].append(f"API error: {e}")
+
+    return result
+
+
+def _generate_ig_dorks(username: str) -> list:
+    encoded = requests.utils.quote(username)
+    dorks = [
+        {"label": "Instagram profile", "query": f'site:instagram.com "{username}"',
+         "url": f"https://www.google.com/search?q=site%3Ainstagram.com+%22{encoded}%22"},
+        {"label": "Cached / indexed posts", "query": f'instagram.com/{username}',
+         "url": f"https://www.google.com/search?q=instagram.com%2F{encoded}"},
+        {"label": "Mentioned elsewhere", "query": f'"{username}" instagram',
+         "url": f"https://www.google.com/search?q=%22{encoded}%22+instagram"},
+    ]
+    return dorks
+
+
+def print_instagram_results(data: dict):
+    username = data.get("username", "?")
+    console.print(f"\n[bold magenta]═══ Instagram: @{username} ═══[/bold magenta]")
+    console.print(f"  URL       : [cyan]{data.get('profile_url')}[/cyan]")
+
+    if not data.get("exists"):
+        console.print("  Status    : [red]✗ Not Found / Account may be private or suspended[/red]")
+    else:
+        status = "[green]✓ Public[/green]" if data.get("is_public") else "[yellow]⚠ Private[/yellow]"
+        console.print(f"  Status    : {status}")
+
+        if data.get("full_name"):
+            verified = " [bold yellow]✓ Verified[/bold yellow]" if data.get("is_verified") else ""
+            console.print(f"  Full Name : [bold white]{data['full_name']}[/bold white]{verified}")
+        if data.get("biography"):
+            console.print(f"  Bio       : [dim]{data['biography'][:180]}[/dim]")
+        if data.get("category"):
+            console.print(f"  Category  : {data['category']}")
+        if data.get("city_name"):
+            console.print(f"  City      : {data['city_name']}")
+        if data.get("external_url"):
+            console.print(f"  Website   : [cyan]{data['external_url']}[/cyan]")
+        if data.get("public_email"):
+            console.print(f"  Email     : [yellow]{data['public_email']}[/yellow]")
+        if data.get("public_phone"):
+            console.print(f"  Phone     : [yellow]{data['public_phone']}[/yellow]")
+
+        stats = []
+        if data.get("follower_count") is not None:
+            fc = data["follower_count"]
+            stats.append(f"[cyan]{fc:,}[/cyan] followers" if isinstance(fc, int) else f"[cyan]{fc}[/cyan] followers")
+        if data.get("following_count") is not None:
+            fw = data["following_count"]
+            stats.append(f"[cyan]{fw:,}[/cyan] following" if isinstance(fw, int) else f"[cyan]{fw}[/cyan] following")
+        if data.get("media_count") is not None:
+            mc = data["media_count"]
+            stats.append(f"[cyan]{mc:,}[/cyan] posts" if isinstance(mc, int) else f"[cyan]{mc}[/cyan] posts")
+        if stats:
+            console.print(f"  Stats     : {' | '.join(stats)}")
+
+        if data.get("profile_pic"):
+            console.print(f"  Profile Pic: [link={data['profile_pic']}][cyan]View image ↗[/cyan][/link]")
+        if data.get("data_sources"):
+            console.print(f"  Data Source: [dim]{', '.join(data['data_sources'])}[/dim]")
+
+    if data.get("security_notes"):
+        console.print("\n  [bold yellow]⚠ Security Observations:[/bold yellow]")
+        for note in data["security_notes"]:
+            console.print(f"    [yellow]• {note}[/yellow]")
+
+    if data.get("dorks"):
+        console.print("\n  [bold]Investigation Dorks:[/bold]")
+        for d in data["dorks"]:
+            console.print(f"    [dim]{d['label']}[/dim]: [cyan]{d['query']}[/cyan]")
+            console.print(f"      [link={d['url']}][blue]Open in Google ↗[/blue][/link]")
+
+
+# ─────────────────────────────────────────────
+# Twitter / X Recon
+# ─────────────────────────────────────────────
+
+def twitter_recon(username: str, bearer_token: str = None) -> dict:
+    """Gather public Twitter/X profile info via Twitter API v2 (free Basic tier)."""
+    username = username.lstrip("@").strip()
+    result = {
+        "username": username,
+        "profile_url": f"https://twitter.com/{username}",
+        "is_public": False,
+        "exists": False,
+        "data_sources": [],
+        "security_notes": [],
+        "dorks": _generate_tw_dorks(username),
+    }
+
+    if not bearer_token:
+        result["security_notes"].append("No Twitter Bearer Token — add TWITTER_BEARER_TOKEN to .env")
+        return result
+
+    try:
+        url = f"https://api.twitter.com/2/users/by/username/{username}"
+        params = {
+            "user.fields": (
+                "name,description,public_metrics,profile_image_url,"
+                "verified,location,url,created_at,entities,protected"
+            )
+        }
+        headers = {"Authorization": f"Bearer {bearer_token}"}
+        resp = requests.get(url, headers=headers, params=params, timeout=12)
+
+        if resp.status_code == 200:
+            d = resp.json().get("data", {}) or {}
+            metrics = d.get("public_metrics", {})
+            result["exists"] = True
+            result["is_public"] = not d.get("protected", False)
+            result["data_sources"].append("Twitter API v2")
+            result.update({
+                "user_id": str(d.get("id", "")),
+                "name": d.get("name"),
+                "description": d.get("description"),
+                "follower_count": metrics.get("followers_count"),
+                "following_count": metrics.get("following_count"),
+                "tweet_count": metrics.get("tweet_count"),
+                "listed_count": metrics.get("listed_count"),
+                "like_count": metrics.get("like_count"),
+                "is_verified": d.get("verified", False),
+                "is_protected": d.get("protected", False),
+                "location": d.get("location"),
+                "url": d.get("url"),
+                "created_at": d.get("created_at"),
+                "profile_image_url": d.get("profile_image_url"),
+            })
+            # Extract expanded URLs from entities
+            entities = d.get("entities", {})
+            urls = entities.get("url", {}).get("urls", [])
+            if urls:
+                result["expanded_url"] = urls[0].get("expanded_url")
+            if result.get("is_verified"):
+                result["security_notes"].append("Verified / Blue-check account")
+            if result.get("is_protected"):
+                result["security_notes"].append("Protected account — tweets are private")
+        elif resp.status_code == 401:
+            result["security_notes"].append("Invalid or expired Twitter bearer token")
+        elif resp.status_code == 404:
+            result["security_notes"].append("Twitter account not found")
+        elif resp.status_code == 403:
+            result["security_notes"].append("Twitter API access forbidden (check app permissions)")
+        else:
+            result["security_notes"].append(f"API returned HTTP {resp.status_code}")
+    except Exception as e:
+        result["security_notes"].append(f"API error: {e}")
+
+    return result
+
+
+def _generate_tw_dorks(username: str) -> list:
+    encoded = requests.utils.quote(username)
+    dorks = [
+        {"label": "Twitter profile", "query": f'site:twitter.com "{username}"',
+         "url": f"https://www.google.com/search?q=site%3Atwitter.com+%22{encoded}%22"},
+        {"label": "Mentions / references", "query": f'"@{username}" twitter',
+         "url": f"https://www.google.com/search?q=%22%40{encoded}%22+twitter"},
+        {"label": "Cached tweets", "query": f'site:x.com "{username}"',
+         "url": f"https://www.google.com/search?q=site%3Ax.com+%22{encoded}%22"},
+    ]
+    return dorks
+
+
+def print_twitter_results(data: dict):
+    username = data.get("username", "?")
+    console.print(f"\n[bold cyan]═══ Twitter/X: @{username} ═══[/bold cyan]")
+    console.print(f"  URL       : [cyan]{data.get('profile_url')}[/cyan]")
+
+    if not data.get("exists"):
+        console.print("  Status    : [red]✗ Not Found / Account suspended[/red]")
+    else:
+        status = "[green]✓ Public[/green]" if data.get("is_public") else "[yellow]⚠ Protected[/yellow]"
+        console.print(f"  Status    : {status}")
+
+        if data.get("name"):
+            verified = " [bold yellow]✓ Verified[/bold yellow]" if data.get("is_verified") else ""
+            console.print(f"  Name      : [bold white]{data['name']}[/bold white]{verified}")
+        if data.get("description"):
+            console.print(f"  Bio       : [dim]{data['description'][:180]}[/dim]")
+        if data.get("location"):
+            console.print(f"  Location  : {data['location']}")
+        if data.get("expanded_url") or data.get("url"):
+            console.print(f"  Website   : [cyan]{data.get('expanded_url') or data.get('url')}[/cyan]")
+        if data.get("created_at"):
+            console.print(f"  Joined    : {str(data['created_at'])[:10]}")
+
+        stats = []
+        if data.get("follower_count") is not None:
+            fc = data["follower_count"]
+            stats.append(f"[cyan]{fc:,}[/cyan] followers" if isinstance(fc, int) else f"[cyan]{fc}[/cyan] followers")
+        if data.get("following_count") is not None:
+            fw = data["following_count"]
+            stats.append(f"[cyan]{fw:,}[/cyan] following" if isinstance(fw, int) else f"[cyan]{fw}[/cyan] following")
+        if data.get("tweet_count") is not None:
+            tc = data["tweet_count"]
+            stats.append(f"[cyan]{tc:,}[/cyan] tweets" if isinstance(tc, int) else f"[cyan]{tc}[/cyan] tweets")
+        if stats:
+            console.print(f"  Stats     : {' | '.join(stats)}")
+
+        if data.get("profile_image_url"):
+            console.print(f"  Avatar    : [link={data['profile_image_url']}][cyan]View image ↗[/cyan][/link]")
+        if data.get("data_sources"):
+            console.print(f"  Data Source: [dim]{', '.join(data['data_sources'])}[/dim]")
+
+    if data.get("security_notes"):
+        console.print("\n  [bold yellow]⚠ Security Observations:[/bold yellow]")
+        for note in data["security_notes"]:
+            console.print(f"    [yellow]• {note}[/yellow]")
+
+    if data.get("dorks"):
+        console.print("\n  [bold]Investigation Dorks:[/bold]")
+        for d in data["dorks"]:
+            console.print(f"    [dim]{d['label']}[/dim]: [cyan]{d['query']}[/cyan]")
+            console.print(f"      [link={d['url']}][blue]Open in Google ↗[/blue][/link]")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reddit Recon — no API key required, uses public JSON endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+REDDIT_HEADERS = {
+    "User-Agent": "OSINT-Tool/1.0 (Educational Research; github.com/osint-tool)",
+    "Accept": "application/json",
+}
+
+
+def _reddit_dorks(username: str) -> list:
+    base = "https://www.google.com/search?q="
+    return [
+        {"label": "All Reddit activity", "query": f'site:reddit.com u/{username}',
+         "url": f"{base}{quote(f'site:reddit.com u/{username}')}"},
+        {"label": "Posts & comments",    "query": f'site:reddit.com/user/{username}',
+         "url": f"{base}{quote(f'site:reddit.com/user/{username}')}"},
+    ]
+
+
+def reddit_recon(username: str) -> dict:
+    """Query Reddit's public JSON API for user profile, recent posts and comments. No API key needed."""
+    username = username.lstrip("u/").lstrip("@").strip()
+    profile_url = f"https://www.reddit.com/user/{username}"
+    result = {
+        "username": username,
+        "profile_url": profile_url,
+        "exists": False,
+        "is_suspended": False,
+        "data_sources": [],
+        "security_notes": [],
+        "dorks": _reddit_dorks(username),
+    }
+
+    # --- About ---
+    try:
+        r = requests.get(
+            f"https://www.reddit.com/user/{username}/about.json",
+            headers=REDDIT_HEADERS,
+            timeout=10,
+        )
+        if r.status_code == 404:
+            result["security_notes"].append("Account not found or deleted")
+            return result
+        if r.status_code == 200:
+            d = r.json().get("data", {})
+            result["exists"] = True
+            result["data_sources"].append("Reddit JSON API")
+            result["name"] = d.get("name")
+            result["display_name"] = d.get("subreddit", {}).get("title") or d.get("name")
+            result["icon_img"] = d.get("icon_img") or d.get("snoovatar_img") or None
+            result["is_employee"] = d.get("is_employee", False)
+            result["is_gold"] = d.get("is_gold", False)
+            result["is_mod"] = d.get("is_mod", False)
+            result["comment_karma"] = d.get("comment_karma", 0)
+            result["link_karma"] = d.get("link_karma", 0)
+            result["total_karma"] = d.get("total_karma") or (result["comment_karma"] + result["link_karma"])
+            created_utc = d.get("created_utc")
+            if created_utc:
+                result["created_at"] = datetime.fromtimestamp(created_utc, tz=timezone.utc).strftime("%Y-%m-%d")
+            subreddit = d.get("subreddit", {})
+            result["bio"] = subreddit.get("public_description") or None
+            result["is_nsfw"] = subreddit.get("over_18", False)
+            result["subscribers"] = subreddit.get("subscribers") or None
+            if d.get("is_suspended"):
+                result["is_suspended"] = True
+                result["security_notes"].append("Account is suspended")
+            if result["is_nsfw"]:
+                result["security_notes"].append("Profile is marked NSFW")
+            if result["is_employee"]:
+                result["security_notes"].append("Reddit employee account")
+        elif r.status_code == 403:
+            result["security_notes"].append("Profile is private or suspended (HTTP 403)")
+        else:
+            result["security_notes"].append(f"Unexpected HTTP {r.status_code} from about endpoint")
+    except Exception as e:
+        result["security_notes"].append(f"about.json error: {e}")
+
+    if not result["exists"]:
+        return result
+
+    # --- Recent Posts ---
+    try:
+        r = requests.get(
+            f"https://www.reddit.com/user/{username}/submitted.json",
+            headers=REDDIT_HEADERS,
+            params={"limit": 10, "sort": "new"},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            children = r.json().get("data", {}).get("children", [])
+            posts = []
+            subreddits_posted = set()
+            for child in children:
+                p = child.get("data", {})
+                subreddits_posted.add(p.get("subreddit", ""))
+                posts.append({
+                    "title": p.get("title", "")[:120],
+                    "subreddit": p.get("subreddit"),
+                    "score": p.get("score", 0),
+                    "num_comments": p.get("num_comments", 0),
+                    "url": f"https://www.reddit.com{p.get('permalink', '')}",
+                    "date": datetime.fromtimestamp(p.get("created_utc", 0), tz=timezone.utc).strftime("%Y-%m-%d") if p.get("created_utc") else None,
+                    "is_nsfw": p.get("over_18", False),
+                })
+            result["recent_posts"] = posts
+            result["subreddits_posted"] = sorted(subreddits_posted)
+    except Exception as e:
+        result["security_notes"].append(f"submitted.json error: {e}")
+
+    # --- Recent Comments ---
+    try:
+        r = requests.get(
+            f"https://www.reddit.com/user/{username}/comments.json",
+            headers=REDDIT_HEADERS,
+            params={"limit": 5, "sort": "new"},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            children = r.json().get("data", {}).get("children", [])
+            comments = []
+            for child in children:
+                c = child.get("data", {})
+                comments.append({
+                    "body": c.get("body", "")[:200],
+                    "subreddit": c.get("subreddit"),
+                    "score": c.get("score", 0),
+                    "url": f"https://www.reddit.com{c.get('permalink', '')}",
+                    "date": datetime.fromtimestamp(c.get("created_utc", 0), tz=timezone.utc).strftime("%Y-%m-%d") if c.get("created_utc") else None,
+                })
+            result["recent_comments"] = comments
+    except Exception as e:
+        result["security_notes"].append(f"comments.json error: {e}")
+
+    return result
+
+
+def print_reddit_results(data: dict):
+    username = data.get("username", "?")
+    console.print(f"\n[bold cyan]═══ Reddit: u/{username} ═══[/bold cyan]")
+    console.print(f"  URL       : [cyan]{data.get('profile_url')}[/cyan]")
+
+    if data.get("is_suspended"):
+        console.print("  Status    : [red]✗ Suspended[/red]")
+    elif not data.get("exists"):
+        console.print("  Status    : [red]✗ Not Found / Deleted[/red]")
+    else:
+        console.print("  Status    : [green]✓ Active[/green]")
+
+        if data.get("display_name") and data["display_name"] != username:
+            console.print(f"  Display   : [bold white]{data['display_name']}[/bold white]")
+        if data.get("created_at"):
+            console.print(f"  Joined    : {data['created_at']}")
+        if data.get("bio"):
+            console.print(f"  Bio       : [dim]{data['bio'][:160]}[/dim]")
+
+        badges = []
+        if data.get("is_employee"):   badges.append("[bold red]Reddit Employee[/bold red]")
+        if data.get("is_gold"):       badges.append("[bold yellow]Gold[/bold yellow]")
+        if data.get("is_mod"):        badges.append("[bold green]Moderator[/bold green]")
+        if data.get("is_nsfw"):       badges.append("[bold red]NSFW[/bold red]")
+        if badges:
+            console.print(f"  Badges    : {' | '.join(badges)}")
+
+        ck = data.get("comment_karma", 0)
+        lk = data.get("link_karma", 0)
+        tk = data.get("total_karma", ck + lk)
+        console.print(f"  Karma     : [cyan]{tk:,}[/cyan] total  ([dim]{lk:,} post | {ck:,} comment[/dim])")
+
+        if data.get("subscribers"):
+            console.print(f"  Followers : [cyan]{data['subscribers']:,}[/cyan]")
+
+        if data.get("subreddits_posted"):
+            subs = ", ".join(f"r/{s}" for s in data["subreddits_posted"][:12])
+            extra = f" (+{len(data['subreddits_posted'])-12} more)" if len(data["subreddits_posted"]) > 12 else ""
+            console.print(f"  Active in : [dim]{subs}{extra}[/dim]")
+
+        if data.get("icon_img"):
+            clean_icon = data["icon_img"].split("?")[0]
+            console.print(f"  Avatar    : [link={clean_icon}][cyan]View image ↗[/cyan][/link]")
+
+        if data.get("recent_posts"):
+            console.print(f"\n  [bold]Recent Posts ({len(data['recent_posts'])}):[/bold]")
+            for p in data["recent_posts"][:5]:
+                nsfw = " [red][NSFW][/red]" if p.get("is_nsfw") else ""
+                console.print(
+                    f"    [dim]{p.get('date','?')}[/dim] "
+                    f"[cyan]r/{p['subreddit']}[/cyan]{nsfw} — "
+                    f"{p['title']} "
+                    f"[dim](↑{p.get('score',0)} | 💬{p.get('num_comments',0)})[/dim]"
+                )
+
+        if data.get("recent_comments"):
+            console.print(f"\n  [bold]Recent Comments ({len(data['recent_comments'])}):[/bold]")
+            for c in data["recent_comments"][:3]:
+                body = c.get("body", "").replace("\n", " ")[:100]
+                console.print(
+                    f"    [dim]{c.get('date','?')}[/dim] "
+                    f"[cyan]r/{c.get('subreddit','?')}[/cyan] — "
+                    f"[dim]{body}[/dim] "
+                    f"[dim](↑{c.get('score',0)})[/dim]"
+                )
+
+    if data.get("security_notes"):
+        console.print("\n  [bold yellow]⚠ Security Observations:[/bold yellow]")
+        for note in data["security_notes"]:
+            console.print(f"    [yellow]• {note}[/yellow]")
+
+    if data.get("dorks"):
+        console.print("\n  [bold]Investigation Dorks:[/bold]")
+        for d in data["dorks"]:
+            console.print(f"    [dim]{d['label']}[/dim]: [cyan]{d['query']}[/cyan]")
+            console.print(f"      [link={d['url']}][blue]Open in Google ↗[/blue][/link]")
+
+
+# ─── Bot / Fake Account Detection ────────────────────────────────────────────
+
+def detect_suspicious_account(profile: dict, platform: str = "unknown") -> dict:
+    """
+    Phân tích các dấu hiệu tài khoản giả/bot dựa trên metadata profile.
+
+    Args:
+        profile:  Dict chứa profile data (từ bất kỳ platform nào)
+        platform: Tên nền tảng (để tùy chỉnh phân tích)
+
+    Returns dict:
+        suspicion_score: 0-100 (0=bình thường, 100=rất đáng ngờ)
+        risk_level: CLEAN / LOW / MEDIUM / HIGH / SUSPICIOUS
+        indicators: danh sách dấu hiệu bất thường phát hiện được
+        positive_signals: dấu hiệu cho thấy tài khoản thật
+    """
+    indicators = []
+    positive_signals = []
+    score = 0
+
+    username = str(profile.get("username") or profile.get("name") or "")
+    followers = profile.get("followers") or profile.get("follower_count") or 0
+    following = profile.get("following") or profile.get("following_count") or 0
+    bio = profile.get("bio") or profile.get("description") or profile.get("about") or ""
+    verified = profile.get("verified") or False
+    post_count = profile.get("post_count") or profile.get("video_count") or profile.get("tweet_count") or 0
+    created_at = profile.get("created_at") or profile.get("joined") or None
+
+    try:
+        followers = int(followers)
+        following = int(following)
+        post_count = int(post_count)
+    except (ValueError, TypeError):
+        followers = following = post_count = 0
+
+    # Username analysis
+    if username:
+        if re.match(r'^[a-z]{2,6}[0-9]{4,}$', username.lower()):
+            score += 15
+            indicators.append(f"Username pattern ngẫu nhiên: '{username}' (chữ + nhiều số)")
+        if len(username) > 20 and sum(1 for c in username if c.isdigit()) > 5:
+            score += 10
+            indicators.append(f"Username quá dài với nhiều số ({len(username)} ký tự)")
+
+    # Follower/Following ratio
+    if following > 0:
+        ratio = followers / following
+        if following > 5000 and followers < 100:
+            score += 30
+            indicators.append(
+                f"Following rất cao ({following:,}) nhưng follower thấp ({followers:,}) — dấu hiệu follow spam"
+            )
+        elif following > 2000 and ratio < 0.1:
+            score += 20
+            indicators.append(f"Tỷ lệ follower/following thấp ({ratio:.2f}) — có thể mua follower hoặc bot")
+        elif ratio > 100 and followers > 100000:
+            positive_signals.append(f"Tỷ lệ follower/following cao ({ratio:.0f}x) — dấu hiệu tài khoản uy tín")
+
+    # Bio analysis
+    if not bio or len(bio.strip()) == 0:
+        score += 10
+        indicators.append("Bio trống — tài khoản thiếu thông tin cá nhân")
+    elif len(bio) < 10:
+        score += 5
+        indicators.append(f"Bio quá ngắn ('{bio}')")
+    else:
+        positive_signals.append("Có bio đầy đủ")
+
+    # Verification status
+    if verified:
+        score -= 20
+        positive_signals.append("Tài khoản đã được xác minh (verified badge)")
+
+    # Post count vs followers
+    if post_count == 0 and followers > 1000:
+        score += 25
+        indicators.append(f"Không có bài đăng nhưng có {followers:,} followers — dấu hiệu mua follower")
+    elif post_count > 0 and followers > 0:
+        posts_per_follower = followers / post_count
+        if posts_per_follower > 10000:
+            score += 15
+            indicators.append(
+                f"Tỷ lệ follower/post bất thường ({posts_per_follower:.0f}/post) — có thể fake followers"
+            )
+
+    # Profile picture
+    profile_pic = (
+        profile.get("profile_picture") or profile.get("avatar") or
+        profile.get("profile_image_url") or profile.get("thumbnail") or ""
+    )
+    if not profile_pic:
+        score += 10
+        indicators.append("Không có ảnh đại diện")
+
+    # Account age
+    if created_at:
+        try:
+            if isinstance(created_at, str):
+                for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d", "%a %b %d %H:%M:%S %z %Y"):
+                    try:
+                        dt = datetime.strptime(created_at[:25], fmt)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        age_days = (datetime.now(timezone.utc) - dt).days
+                        if age_days < 30:
+                            score += 20
+                            indicators.append(f"Tài khoản mới tạo (chỉ {age_days} ngày trước)")
+                        elif age_days < 180:
+                            score += 5
+                            indicators.append(f"Tài khoản dưới 6 tháng tuổi ({age_days} ngày)")
+                        elif age_days > 730:
+                            positive_signals.append(f"Tài khoản lâu đời ({age_days // 365} năm)")
+                        break
+                    except ValueError:
+                        continue
+        except Exception:
+            pass
+
+    score = max(0, min(100, score))
+
+    if score >= 60:
+        risk_level = "SUSPICIOUS"
+        color = "bold red"
+    elif score >= 40:
+        risk_level = "HIGH"
+        color = "red"
+    elif score >= 20:
+        risk_level = "MEDIUM"
+        color = "yellow"
+    elif score > 0:
+        risk_level = "LOW"
+        color = "cyan"
+    else:
+        risk_level = "CLEAN"
+        color = "green"
+
+    return {
+        "platform": platform,
+        "suspicion_score": score,
+        "risk_level": risk_level,
+        "color": color,
+        "indicators": indicators,
+        "positive_signals": positive_signals,
+    }
+
+
+def print_account_analysis(analysis: dict):
+    """Hiển thị kết quả phân tích bot/fake account."""
+    score = analysis.get("suspicion_score", 0)
+    risk = analysis.get("risk_level", "UNKNOWN")
+    color = analysis.get("color", "white")
+    platform = analysis.get("platform", "")
+
+    label = f"[{platform}] " if platform and platform != "unknown" else ""
+    console.print(f"\n  [bold]🔍 {label}Bot/Fake Account Analysis:[/bold]")
+    console.print(f"  Suspicion Score: [{color}]{score}/100 — {risk}[/{color}]")
+
+    indicators = analysis.get("indicators", [])
+    positives = analysis.get("positive_signals", [])
+
+    if indicators:
+        console.print("  [bold yellow]Dấu hiệu đáng ngờ:[/bold yellow]")
+        for ind in indicators:
+            console.print(f"    [yellow]⚠ {ind}[/yellow]")
+
+    if positives:
+        console.print("  [bold green]Tín hiệu tích cực:[/bold green]")
+        for pos in positives:
+            console.print(f"    [green]✓ {pos}[/green]")
+
+    if not indicators and not positives:
+        console.print("  [dim]Không đủ dữ liệu để phân tích[/dim]")

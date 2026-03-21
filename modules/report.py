@@ -2,6 +2,7 @@
 Report Generator Module
 Exports all gathered intelligence to HTML and JSON formats.
 """
+import html as _html
 import json
 import csv
 import io
@@ -10,6 +11,12 @@ from pathlib import Path
 from rich.console import Console
 
 console = Console()
+
+
+def _e(value) -> str:
+    """Escape HTML entities in plain text values to prevent XSS."""
+    return _html.escape(str(value), quote=True)
+
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="vi">
@@ -55,13 +62,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 
 def _section(title: str, content: str) -> str:
-    return f'<div class="section"><h2>{title}</h2>{content}</div>'
+    return f'<div class="section"><h2>{_e(title)}</h2>{content}</div>'
 
 
 def _table(rows: list, headers: list = None) -> str:
     html = "<table>"
     if headers:
-        html += "<tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>"
+        html += "<tr>" + "".join(f"<th>{_e(h)}</th>" for h in headers) + "</tr>"
     for row in rows:
         html += "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
     html += "</table>"
@@ -69,7 +76,7 @@ def _table(rows: list, headers: list = None) -> str:
 
 
 def _kv_table(data: dict) -> str:
-    rows = [(k, v) for k, v in data.items() if v]
+    rows = [(_e(k), _e(str(v))) for k, v in data.items() if v]
     return _table(rows)
 
 
@@ -132,21 +139,136 @@ def build_html_report(target: str, all_data: dict) -> str:
             rows = [(name, f'<a href="{url}" target="_blank">{url}</a>') for name, url in links_data.items()]
             sections.append(_section("External Recon Links", _table(rows)))
 
+        # VirusTotal
+        vt = all_data["ip"].get("virustotal", {})
+        if vt and vt.get("success"):
+            mal = vt.get("malicious", 0)
+            sus = vt.get("suspicious", 0)
+            rep = vt.get("reputation", 0)
+            color_cls = "danger" if mal > 0 else ("warning" if sus > 0 else "found")
+            vt_html = f'<p class="{color_cls}"><strong>{mal} malicious / {sus} suspicious</strong> (reputation score: {rep})</p>'
+            if vt.get("as_owner"):
+                vt_html += f'<p>AS Owner: {vt["as_owner"]}</p>'
+            if vt.get("country"):
+                vt_html += f'<p>Country: {vt["country"]}</p>'
+            if vt.get("categories"):
+                cats = ", ".join(f"{k}: {v}" for k, v in list(vt["categories"].items())[:5])
+                vt_html += f'<p>Categories: {cats}</p>'
+            sections.append(_section("VirusTotal Analysis", vt_html))
+
+        # Shodan
+        shodan = all_data["ip"].get("shodan", {})
+        if shodan and shodan.get("success"):
+            ports = shodan.get("ports", [])
+            vulns = shodan.get("vulns", [])
+            sh_rows = []
+            sh_rows.append(("Open Ports", ", ".join(str(p) for p in ports) or "None"))
+            if shodan.get("org"):
+                sh_rows.append(("Organization", shodan["org"]))
+            if shodan.get("os"):
+                sh_rows.append(("OS", shodan["os"]))
+            if shodan.get("isp"):
+                sh_rows.append(("ISP", shodan["isp"]))
+            if shodan.get("last_update"):
+                sh_rows.append(("Last Scan", str(shodan["last_update"])[:10]))
+            sh_html = _table(sh_rows, ["Field", "Value"])
+            if vulns:
+                sh_html += f'<p class="danger">⚠ {len(vulns)} CVE(s) detected: {", ".join(vulns[:10])}</p>'
+            if shodan.get("services"):
+                svc_rows = [
+                    (str(s.get("port", "")), s.get("transport", "tcp"),
+                     s.get("product") or "—", s.get("version") or "—")
+                    for s in shodan["services"][:10]
+                ]
+                sh_html += "<br>" + _table(svc_rows, ["Port", "Proto", "Product", "Version"])
+            sections.append(_section("Shodan Intelligence", sh_html))
+
+        # AbuseIPDB
+        abuse = all_data["ip"].get("abuseipdb", {})
+        if abuse and abuse.get("success"):
+            score = abuse.get("abuse_confidence_score", 0)
+            reports = abuse.get("total_reports", 0)
+            score_cls = "danger" if score >= 50 else ("warning" if score >= 10 else "found")
+            ab_rows = [
+                ("Abuse Score", f'<span class="{score_cls}"><strong>{score}%</strong></span>'),
+                ("Total Reports", str(reports)),
+            ]
+            if abuse.get("usage_type"):
+                ab_rows.append(("Usage Type", abuse["usage_type"]))
+            if abuse.get("isp"):
+                ab_rows.append(("ISP", abuse["isp"]))
+            if abuse.get("domain"):
+                ab_rows.append(("Domain", abuse["domain"]))
+            if abuse.get("is_tor"):
+                ab_rows.append(("TOR Node", '<span class="danger">Yes — TOR Exit Node</span>'))
+            if abuse.get("last_reported_at"):
+                ab_rows.append(("Last Report", str(abuse["last_reported_at"])[:16]))
+            sections.append(_section("AbuseIPDB Reputation", _table(ab_rows, ["Field", "Value"])))
+
     # Email
     if "email" in all_data:
         e = all_data["email"]
-        summary = f"<p>Email: <strong>{e.get('email')}</strong> &nbsp; Domain: {e.get('domain')}</p>"
+        summary = f"<p>Email: <strong>{_e(e.get('email', ''))}</strong> &nbsp; Domain: {_e(e.get('domain', ''))}</p>"
         g = e.get("gravatar", {})
         if g.get("found"):
-            summary += f'<p class="found">✓ Gravatar: {g.get("display_name", "")} — <a href="{g.get("profile_url","")}">Profile</a></p>'
+            summary += f'<p class="found">✓ Gravatar: {_e(g.get("display_name", ""))} — <a href="{_e(g.get("profile_url",""))}">Profile</a></p>'
         hibp = e.get("hibp", {})
         if hibp.get("breaches"):
-            rows = [(b["name"], b["date"], f"{b['pwn_count']:,}", ", ".join(b["data_classes"][:4]))
+            rows = [(_e(b["name"]), _e(b["date"]), f"{b['pwn_count']:,}", _e(", ".join(b["data_classes"][:4])))
                     for b in hibp["breaches"]]
             summary += '<p class="danger">⚠ Found in data breaches:</p>'
             summary += _table(rows, ["Breach", "Date", "Records", "Data Types"])
         else:
             summary += '<p class="found">✓ No breaches found (HIBP)</p>'
+
+        # Hunter.io
+        hunter = e.get("hunter", {})
+        if hunter and hunter.get("success"):
+            summary += '<br><strong>Hunter.io:</strong>'
+            h_rows = []
+            if hunter.get("organization"):
+                h_rows.append(("Organization", _e(hunter["organization"])))
+            if hunter.get("pattern"):
+                h_rows.append(("Email Pattern", f'<code>{_e(hunter["pattern"])}@{_e(hunter.get("domain",""))}</code>'))
+            h_rows.append(("Total Emails Found", str(hunter.get("total_emails", 0))))
+            if hunter.get("webmail"):
+                h_rows.append(("Type", "Webmail provider"))
+            if hunter.get("disposable"):
+                h_rows.append(("Warning", '<span class="danger">Disposable domain</span>'))
+            summary += _table(h_rows, ["Field", "Value"])
+            if hunter.get("emails"):
+                em_rows = [
+                    (
+                        _e(em.get("value", "")),
+                        _e(em.get("type", "")),
+                        f'{em.get("confidence","")}%' if em.get("confidence") is not None else "—",
+                        _e(f'{em.get("first_name","")} {em.get("last_name","")}'.strip() or "—"),
+                        _e(em.get("position") or "—"),
+                    )
+                    for em in hunter["emails"][:10]
+                ]
+                summary += "<br>" + _table(em_rows, ["Email", "Type", "Confidence", "Name", "Position"])
+
+        # EmailRep.io
+        emailrep = e.get("emailrep", {})
+        if emailrep and emailrep.get("success"):
+            rep = emailrep.get("reputation", "none")
+            rep_cls = {"high": "found", "medium": "warning", "low": "danger", "none": ""}.get(rep, "")
+            summary += f'<br><strong>EmailRep.io:</strong> Reputation: <span class="{rep_cls}">{_e(rep)}</span>'
+            flags = []
+            if emailrep.get("suspicious"):         flags.append('<span class="danger">suspicious</span>')
+            if emailrep.get("blacklisted"):        flags.append('<span class="danger">blacklisted</span>')
+            if emailrep.get("malicious_activity"): flags.append('<span class="danger">malicious activity</span>')
+            if emailrep.get("credentials_leaked"): flags.append('<span class="warning">credentials leaked</span>')
+            if emailrep.get("data_breach"):        flags.append('<span class="warning">data breach</span>')
+            if emailrep.get("spam"):               flags.append('<span class="warning">spam</span>')
+            if emailrep.get("disposable"):         flags.append('<span class="warning">disposable</span>')
+            if flags:
+                summary += " | " + " | ".join(flags)
+            summary += f' | {emailrep.get("references", 0)} references'
+            if emailrep.get("profiles"):
+                summary += f'<br>Profiles: {_e(", ".join(emailrep["profiles"][:8]))}'
+
         sections.append(_section("Email Intelligence", summary))
 
     # Username
@@ -168,6 +290,16 @@ def build_html_report(target: str, all_data: dict) -> str:
                 "Carrier": p.get("carrier"),
                 "Timezones": ", ".join(p.get("timezones", [])),
             }
+            nv = p.get("numverify", {})
+            if nv and nv.get("success") and nv.get("valid"):
+                if nv.get("line_type"):
+                    phone_data["Line Type (Live)"] = nv["line_type"]
+                if nv.get("carrier") and nv.get("carrier") != p.get("carrier"):
+                    phone_data["Carrier (Live)"] = nv["carrier"]
+                if nv.get("location"):
+                    phone_data["Location"] = nv["location"]
+                if nv.get("country_name"):
+                    phone_data["Country (Live)"] = nv["country_name"]
             sections.append(_section("Phone Intelligence", _kv_table(phone_data)))
 
     # Facebook
@@ -266,6 +398,74 @@ def build_html_report(target: str, all_data: dict) -> str:
             html += "</ul>"
         sections.append(_section("Facebook Intelligence", html))
 
+    # Reddit
+    if "reddit" in all_data:
+        rd = all_data["reddit"]
+        status_cls = "found" if rd.get("exists") and not rd.get("is_suspended") else ("warning" if rd.get("is_suspended") else "danger")
+        status_label = "Suspended" if rd.get("is_suspended") else ("Active" if rd.get("exists") else "Not Found / Deleted")
+        rows = [
+            ("URL", f'<a href="{rd["profile_url"]}" target="_blank">{rd["profile_url"]}</a>'),
+            ("Status", f'<span class="{status_cls}">{status_label}</span>'),
+        ]
+        if rd.get("display_name") and rd["display_name"] != rd.get("username"):
+            rows.append(("Display Name", f'<strong>{rd["display_name"]}</strong>'))
+        if rd.get("created_at"):
+            rows.append(("Joined", rd["created_at"]))
+        if rd.get("bio"):
+            rows.append(("Bio", rd["bio"][:300]))
+        if rd.get("total_karma") is not None:
+            ck = rd.get("comment_karma", 0)
+            lk = rd.get("link_karma", 0)
+            rows.append(("Karma", f'{rd["total_karma"]:,} total ({lk:,} post | {ck:,} comment)'))
+        if rd.get("subscribers"):
+            rows.append(("Followers", f'{rd["subscribers"]:,}'))
+        badges = []
+        if rd.get("is_employee"):  badges.append("Reddit Employee")
+        if rd.get("is_gold"):      badges.append("Gold")
+        if rd.get("is_mod"):       badges.append("Moderator")
+        if rd.get("is_nsfw"):      badges.append("NSFW")
+        if badges:
+            rows.append(("Badges", " | ".join(badges)))
+        if rd.get("subreddits_posted"):
+            rows.append(("Active Subreddits", ", ".join(f'r/{s}' for s in rd["subreddits_posted"][:20])))
+        if rd.get("icon_img"):
+            clean = rd["icon_img"].split("?")[0]
+            rows.append(("Avatar", f'<a href="{clean}" target="_blank">View image ↗</a>'))
+        html = _table(rows, ["Field", "Value"])
+        if rd.get("security_notes"):
+            html += "<br><strong>⚠ Security Observations:</strong><ul>"
+            html += "".join(f'<li class="warning">{n}</li>' for n in rd["security_notes"])
+            html += "</ul>"
+        if rd.get("recent_posts"):
+            html += "<br><strong>Recent Posts:</strong>"
+            html += '<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%"><tr><th>Date</th><th>Subreddit</th><th>Title</th><th>↑ Score</th><th>💬</th><th>Link</th></tr>'
+            for p in rd["recent_posts"]:
+                nsfw = ' <span class="danger">[NSFW]</span>' if p.get("is_nsfw") else ""
+                html += (f'<tr><td>{p.get("date") or "—"}</td>'
+                         f'<td>r/{p.get("subreddit","?")}</td>'
+                         f'<td>{p["title"]}{nsfw}</td>'
+                         f'<td align="right">{p.get("score",0)}</td>'
+                         f'<td align="right">{p.get("num_comments",0)}</td>'
+                         f'<td><a href="{p["url"]}" target="_blank">View ↗</a></td></tr>')
+            html += "</table>"
+        if rd.get("recent_comments"):
+            html += "<br><strong>Recent Comments:</strong>"
+            html += '<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%"><tr><th>Date</th><th>Subreddit</th><th>Comment</th><th>↑ Score</th><th>Link</th></tr>'
+            for c in rd["recent_comments"]:
+                body = (c.get("body") or "")[:150].replace("<", "&lt;").replace(">", "&gt;")
+                html += (f'<tr><td>{c.get("date") or "—"}</td>'
+                         f'<td>r/{c.get("subreddit","?")}</td>'
+                         f'<td>{body}</td>'
+                         f'<td align="right">{c.get("score",0)}</td>'
+                         f'<td><a href="{c["url"]}" target="_blank">View ↗</a></td></tr>')
+            html += "</table>"
+        if rd.get("dorks"):
+            html += "<br><strong>Investigation Dorks:</strong><ul>"
+            for d in rd["dorks"]:
+                html += f'<li><a href="{d["url"]}" target="_blank">{d["label"]}</a>: <code>{d["query"]}</code></li>'
+            html += "</ul>"
+        sections.append(_section("Reddit Intelligence", html))
+
     # Breach Check
     if "breach" in all_data:
         br = all_data["breach"]
@@ -274,10 +474,10 @@ def build_html_report(target: str, all_data: dict) -> str:
         total_pastes = summary.get("total_pastes", 0)
         status_cls = "danger" if total > 0 else "found"
         status_label = f"⚠ Tìm thấy ~{total} vụ rò rỉ" if total > 0 else "✓ Không tìm thấy"
-        html = f'<p class="{status_cls}"><strong>{status_label}</strong></p>'
+        html = f'<p class="{status_cls}"><strong>{_e(status_label)}</strong></p>'
         srcs = summary.get("sources_checked", [])
         if srcs:
-            html += f'<p class="meta">Nguồn đã kiểm tra: {", ".join(srcs)}</p>'
+            html += f'<p class="meta">Nguồn đã kiểm tra: {_e(", ".join(srcs))}</p>'
 
         # LeakCheck
         lc = br.get("leakcheck", {}) or {}
@@ -285,11 +485,11 @@ def build_html_report(target: str, all_data: dict) -> str:
         if lc.get("found"):
             sources = lc.get("sources", [])
             html += f'<p class="danger">⚠ Xuất hiện trong {len(sources)} nguồn</p>'
-            html += "<ul>" + "".join(f"<li>{s}</li>" for s in sources) + "</ul>"
+            html += "<ul>" + "".join(f"<li>{_e(s)}</li>" for s in sources) + "</ul>"
         elif lc.get("note"):
-            html += f'<p class="meta">{lc["note"]}</p>'
+            html += f'<p class="meta">{_e(lc["note"])}</p>'
         elif lc.get("error"):
-            html += f'<p class="warning">Lỗi: {lc["error"]}</p>'
+            html += f'<p class="warning">Lỗi: {_e(lc["error"])}</p>'
         else:
             html += '<p class="found">✓ Không tìm thấy trong LeakCheck.io</p>'
 
@@ -297,7 +497,7 @@ def build_html_report(target: str, all_data: dict) -> str:
         bd = br.get("breachdirectory", {}) or {}
         html += "<h3 style='color:#79c0ff;margin:12px 0 6px'>② BreachDirectory (RapidAPI)</h3>"
         if bd.get("note"):
-            html += "<br>".join(f'<p class="meta">{line}</p>' for line in bd["note"].splitlines())
+            html += "<br>".join(f'<p class="meta">{_e(line)}</p>' for line in bd["note"].splitlines())
         elif bd.get("found"):
             size = bd.get("size", len(bd.get("result", [])))
             html += f'<p class="danger">⚠ {size} bản ghi bị lộ</p>'
@@ -307,11 +507,11 @@ def build_html_report(target: str, all_data: dict) -> str:
                 src = src_raw[0] if isinstance(src_raw, list) and src_raw else str(src_raw or "?")
                 fields = ", ".join(entry.get("fields", [])) or "—"
                 h_type = entry.get("password_type", "—")
-                rows.append((src, fields, h_type))
+                rows.append((_e(src), _e(fields), _e(h_type)))
             if rows:
                 html += _table(rows, ["Nguồn (Source)", "Dữ liệu bị lộ", "Hash type"])
         elif bd.get("error"):
-            html += f'<p class="warning">Lỗi: {bd["error"]}</p>'
+            html += f'<p class="warning">Lỗi: {_e(bd["error"])}</p>'
         else:
             html += '<p class="found">✓ Không tìm thấy</p>'
 
@@ -319,14 +519,14 @@ def build_html_report(target: str, all_data: dict) -> str:
         hibp = br.get("hibp", {}) or {}
         html += "<h3 style='color:#79c0ff;margin:12px 0 6px'>③ HaveIBeenPwned</h3>"
         if hibp.get("note"):
-            html += "<br>".join(f'<p class="meta">{line}</p>' for line in hibp["note"].splitlines())
+            html += "<br>".join(f'<p class="meta">{_e(line)}</p>' for line in hibp["note"].splitlines())
         elif hibp.get("breaches"):
             breaches = hibp["breaches"]
             html += f'<p class="danger">⚠ Có trong {len(breaches)} vụ rò rỉ:</p>'
             rows = [
-                (b.get("name", "?"), b.get("date", "?"),
+                (_e(b.get("name", "?")), _e(b.get("date", "?")),
                  f'{b["pwn_count"]:,}' if b.get("pwn_count") else "?",
-                 ", ".join((b.get("data_classes") or [])[:4]))
+                 _e(", ".join((b.get("data_classes") or [])[:4])))
                 for b in breaches
             ]
             html += _table(rows, ["Tên vụ rò rỉ", "Ngày", "Số bản ghi", "Loại dữ liệu"])
@@ -342,7 +542,7 @@ def build_html_report(target: str, all_data: dict) -> str:
             if pw.get("exposed"):
                 html += f'<p class="danger">⚠ Mật khẩu đã bị lộ {pw["count"]:,} lần!</p>'
             elif pw.get("error"):
-                html += f'<p class="warning">Lỗi: {pw["error"]}</p>'
+                html += f'<p class="warning">Lỗi: {_e(pw["error"])}</p>'
             else:
                 html += '<p class="found">✓ Mật khẩu chưa xuất hiện trong rò rỉ đã biết</p>'
 
@@ -350,12 +550,12 @@ def build_html_report(target: str, all_data: dict) -> str:
         if br.get("dorks"):
             html += "<br><strong>Tra cứu thêm:</strong><ul>"
             html += "".join(
-                f'<li><a href="{d["url"]}" target="_blank">{d["label"]}</a></li>'
+                f'<li><a href="{_e(d["url"])}" target="_blank">{_e(d["label"])}</a></li>'
                 for d in br["dorks"]
             )
             html += "</ul>"
 
-        sections.append(_section(f"Breach / Data Leak Check — {br.get('target','')}", html))
+        sections.append(_section(f"Breach / Data Leak Check — {_e(br.get('target',''))}", html))
 
     # TikTok
     if "tiktok" in all_data:
@@ -402,6 +602,111 @@ def build_html_report(target: str, all_data: dict) -> str:
             )
             html += "</ul>"
         sections.append(_section("TikTok Intelligence", html))
+
+    # Instagram
+    if "instagram" in all_data:
+        ig = all_data["instagram"]
+        status_cls = "found" if ig.get("is_public") else ("warning" if ig.get("exists") else "danger")
+        status_label = "Public" if ig.get("is_public") else ("Private" if ig.get("exists") else "Not Found")
+        rows = [
+            ("URL", f'<a href="{ig["profile_url"]}" target="_blank">{ig["profile_url"]}</a>'),
+            ("Status", f'<span class="{status_cls}">{status_label}</span>'),
+        ]
+        if ig.get("full_name"):
+            verified_badge = ' <span style="color:#f5a623">✓ Verified</span>' if ig.get("is_verified") else ""
+            rows.append(("Full Name", f'<strong>{ig["full_name"]}</strong>{verified_badge}'))
+        if ig.get("biography"):
+            rows.append(("Bio", ig["biography"][:200]))
+        if ig.get("category"):
+            rows.append(("Category", ig["category"]))
+        if ig.get("city_name"):
+            rows.append(("City", ig["city_name"]))
+        if ig.get("external_url"):
+            rows.append(("Website", f'<a href="{ig["external_url"]}" target="_blank">{ig["external_url"]}</a>'))
+        if ig.get("public_email"):
+            rows.append(("Public Email", f'<span class="warning">{ig["public_email"]}</span>'))
+        if ig.get("public_phone"):
+            rows.append(("Public Phone", f'<span class="warning">{ig["public_phone"]}</span>'))
+        stats = []
+        if ig.get("follower_count") is not None:
+            fc = ig["follower_count"]
+            stats.append(f"{fc:,} followers" if isinstance(fc, int) else str(fc))
+        if ig.get("following_count") is not None:
+            fw = ig["following_count"]
+            stats.append(f"{fw:,} following" if isinstance(fw, int) else str(fw))
+        if ig.get("media_count") is not None:
+            mc = ig["media_count"]
+            stats.append(f"{mc:,} posts" if isinstance(mc, int) else str(mc))
+        if stats:
+            rows.append(("Stats", " | ".join(stats)))
+        if ig.get("profile_pic"):
+            rows.append(("Profile Picture", f'<a href="{ig["profile_pic"]}" target="_blank">View image ↗</a>'))
+        if ig.get("data_sources"):
+            rows.append(("Data Sources", ", ".join(ig["data_sources"])))
+        html = _table(rows, ["Field", "Value"])
+        if ig.get("security_notes"):
+            html += "<br><strong>⚠ Security Observations:</strong><ul>"
+            html += "".join(f'<li class="warning">{n}</li>' for n in ig["security_notes"])
+            html += "</ul>"
+        if ig.get("dorks"):
+            html += "<br><strong>Investigation Dorks:</strong><ul>"
+            html += "".join(
+                f'<li><a href="{d["url"]}" target="_blank">{d["label"]}</a>: <code>{d["query"]}</code></li>'
+                for d in ig["dorks"]
+            )
+            html += "</ul>"
+        sections.append(_section("Instagram Intelligence", html))
+
+    # Twitter / X
+    if "twitter" in all_data:
+        tw = all_data["twitter"]
+        status_cls = "found" if tw.get("is_public") else ("warning" if tw.get("exists") else "danger")
+        status_label = "Public" if tw.get("is_public") else ("Protected" if tw.get("exists") else "Not Found")
+        rows = [
+            ("URL", f'<a href="{tw["profile_url"]}" target="_blank">{tw["profile_url"]}</a>'),
+            ("Status", f'<span class="{status_cls}">{status_label}</span>'),
+        ]
+        if tw.get("name"):
+            verified_badge = ' <span style="color:#f5a623">✓ Verified</span>' if tw.get("is_verified") else ""
+            rows.append(("Name", f'<strong>{tw["name"]}</strong>{verified_badge}'))
+        if tw.get("description"):
+            rows.append(("Bio", tw["description"][:200]))
+        if tw.get("location"):
+            rows.append(("Location", tw["location"]))
+        if tw.get("expanded_url") or tw.get("url"):
+            link = tw.get("expanded_url") or tw.get("url")
+            rows.append(("Website", f'<a href="{link}" target="_blank">{link}</a>'))
+        if tw.get("created_at"):
+            rows.append(("Joined", str(tw["created_at"])[:10]))
+        stats = []
+        if tw.get("follower_count") is not None:
+            fc = tw["follower_count"]
+            stats.append(f"{fc:,} followers" if isinstance(fc, int) else str(fc))
+        if tw.get("following_count") is not None:
+            fw = tw["following_count"]
+            stats.append(f"{fw:,} following" if isinstance(fw, int) else str(fw))
+        if tw.get("tweet_count") is not None:
+            tc = tw["tweet_count"]
+            stats.append(f"{tc:,} tweets" if isinstance(tc, int) else str(tc))
+        if stats:
+            rows.append(("Stats", " | ".join(stats)))
+        if tw.get("profile_image_url"):
+            rows.append(("Avatar", f'<a href="{tw["profile_image_url"]}" target="_blank">View image ↗</a>'))
+        if tw.get("data_sources"):
+            rows.append(("Data Sources", ", ".join(tw["data_sources"])))
+        html = _table(rows, ["Field", "Value"])
+        if tw.get("security_notes"):
+            html += "<br><strong>⚠ Security Observations:</strong><ul>"
+            html += "".join(f'<li class="warning">{n}</li>' for n in tw["security_notes"])
+            html += "</ul>"
+        if tw.get("dorks"):
+            html += "<br><strong>Investigation Dorks:</strong><ul>"
+            html += "".join(
+                f'<li><a href="{d["url"]}" target="_blank">{d["label"]}</a>: <code>{d["query"]}</code></li>'
+                for d in tw["dorks"]
+            )
+            html += "</ul>"
+        sections.append(_section("Twitter / X Intelligence", html))
 
     # YouTube
     if "youtube" in all_data:
@@ -531,7 +836,7 @@ def build_html_report(target: str, all_data: dict) -> str:
 
     content = "\n".join(sections)
     return HTML_TEMPLATE.format(
-        target=target,
+        target=_e(target),
         timestamp=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         content=content,
     )

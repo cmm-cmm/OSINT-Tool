@@ -207,8 +207,81 @@ def check_hibp_email(email: str, api_key: str | None) -> dict:
 
 # ─── Investigation dorks ──────────────────────────────────────────────────
 
+# Severity scoring based on data classes exposed in breaches
+_DATA_CLASS_SEVERITY = {
+    # CRITICAL
+    "Passwords": 10, "Password hints": 8, "Credit cards": 10,
+    "CVVs": 10, "PIN numbers": 9, "Bank account numbers": 10,
+    "Social security numbers": 10, "Passport numbers": 9,
+    "Biometric data": 10, "Private messages": 7,
+    # HIGH
+    "Physical addresses": 6, "Phone numbers": 6, "Dates of birth": 6,
+    "Government issued IDs": 8, "Driver's licence numbers": 8,
+    "Tax identification numbers": 8, "Medical records": 9,
+    "Health insurance information": 8, "Financial transactions": 8,
+    "Crypto wallet hashes": 7,
+    # MEDIUM
+    "Email addresses": 4, "Usernames": 4, "Names": 3,
+    "Gender": 2, "Ages": 2, "Geographic locations": 3,
+    "IP addresses": 3, "Device information": 3,
+    "Browser user agent details": 2, "Purchases": 4,
+    # LOW
+    "Website activity": 2, "Chat logs": 5, "Time zones": 1,
+    "Languages": 1, "Education levels": 2, "Job titles": 2,
+    "Employers": 2,
+}
+
+
+def calculate_breach_severity(data_classes: list[str]) -> dict:
+    """
+    Tính mức độ nghiêm trọng của vụ rò rỉ dựa trên loại dữ liệu bị lộ.
+
+    Returns:
+        dict với score (0-100), risk_level (LOW/MEDIUM/HIGH/CRITICAL),
+        critical_items (các mục nguy hiểm nhất)
+    """
+    if not data_classes:
+        return {"score": 0, "risk_level": "UNKNOWN", "critical_items": []}
+
+    max_score = 0
+    total_score = 0
+    critical_items = []
+
+    for dc in data_classes:
+        severity = _DATA_CLASS_SEVERITY.get(dc, 2)
+        total_score += severity
+        if severity >= max_score:
+            max_score = severity
+        if severity >= 7:
+            critical_items.append(dc)
+
+    # Normalize: higher total = worse, but cap at 100
+    normalized = min(100, int((max_score * 6) + (total_score * 0.5)))
+
+    if normalized >= 70 or max_score >= 9:
+        risk_level = "CRITICAL"
+        color = "bold red"
+    elif normalized >= 50 or max_score >= 7:
+        risk_level = "HIGH"
+        color = "red"
+    elif normalized >= 30 or max_score >= 4:
+        risk_level = "MEDIUM"
+        color = "yellow"
+    else:
+        risk_level = "LOW"
+        color = "green"
+
+    return {
+        "score": normalized,
+        "risk_level": risk_level,
+        "color": color,
+        "critical_items": critical_items,
+        "total_data_classes": len(data_classes),
+    }
+
 def _breach_dorks(query: str) -> list:
-    enc = query.replace(" ", "+").replace("@", "%40").replace("_", "%5F")
+    from urllib.parse import quote_plus
+    enc = quote_plus(query)
     return [
         {
             "label": "HaveIBeenPwned (tra cứu thủ công)",
@@ -390,14 +463,27 @@ def print_breach_results(data: dict):
             t.add_column("Ngày")
             t.add_column("Số bản ghi", justify="right")
             t.add_column("Loại dữ liệu")
+            t.add_column("Mức độ", width=10)
             for b in breaches:
+                data_classes = b.get("data_classes") or []
+                sev = calculate_breach_severity(data_classes)
+                risk = sev.get("risk_level", "?")
+                risk_color = sev.get("color", "white")
                 t.add_row(
                     b.get("name") or "?",
                     b.get("date") or "?",
                     f'{b["pwn_count"]:,}' if b.get("pwn_count") else "?",
-                    ", ".join((b.get("data_classes") or [])[:4]),
+                    ", ".join(data_classes[:4]),
+                    f"[{risk_color}]{risk}[/{risk_color}]",
                 )
             console.print(t)
+            # Show most critical items across all breaches
+            all_critical = set()
+            for b in breaches:
+                sev = calculate_breach_severity(b.get("data_classes") or [])
+                all_critical.update(sev.get("critical_items", []))
+            if all_critical:
+                console.print(f"    [bold red]Dữ liệu nhạy cảm nhất bị lộ: {', '.join(sorted(all_critical))}[/bold red]")
         else:
             console.print("    [green]✓ Không tìm thấy trong HIBP breaches[/green]")
         if pastes:
