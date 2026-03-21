@@ -14,7 +14,7 @@ import sys
 import os
 import re
 import json
-from ipaddress import AddressValueError, IPv4Address
+from ipaddress import AddressValueError, IPv4Address, ip_address
 from pathlib import Path
 from urllib.parse import urlparse
 from dotenv import load_dotenv
@@ -152,7 +152,11 @@ def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip,
     if not _is_valid_target(target):
         console.print(f"[red]✗ Invalid domain or IP address: '{target}'[/red]")
         return
-    is_ip_target = all(c.isdigit() or c == "." for c in target)
+    try:
+        ip_address(target)
+        is_ip_target = True
+    except ValueError:
+        is_ip_target = False
 
     if out_fmt == "table":
         print_banner()

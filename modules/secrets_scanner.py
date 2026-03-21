@@ -16,6 +16,8 @@ Quét các file nhạy cảm bị lộ trên website:
 Không cần API key — chỉ dùng requests.
 """
 import re
+import warnings
+import urllib3
 import requests
 from rich.console import Console
 from rich.table import Table
@@ -146,8 +148,10 @@ def _probe_path(base_url: str, path: str) -> dict | None:
     """Thử request một path và trả về kết quả nếu accessible."""
     url = f"{base_url.rstrip('/')}/{path}"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT,
-                            allow_redirects=False, verify=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+            resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT,
+                                allow_redirects=False, verify=False)
         # Only flag if actually returns content (not redirect to login)
         if resp.status_code in (200, 206):
             content_len = len(resp.content)
@@ -179,7 +183,9 @@ def _scan_page_for_secrets(url: str) -> list:
     """Tải page source và tìm pattern API key / credential bị lộ."""
     findings = []
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=12, verify=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+            resp = requests.get(url, headers=HEADERS, timeout=12, verify=False)
         if resp.status_code != 200:
             return findings
         source = resp.text
@@ -221,9 +227,6 @@ def secrets_scan(target: str) -> dict:
       - exposed_git, exposed_env, exposed_backups, exposed_sensitive,
         security_txt, robots_txt, secrets_in_source, summary
     """
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
     target = target.strip().rstrip("/")
     if not target.startswith(("http://", "https://")):
         base_url = f"https://{target}"
@@ -255,8 +258,10 @@ def secrets_scan(target: str) -> dict:
     for scheme in ("https", "http"):
         try:
             test_url = f"{scheme}://{target.replace('https://', '').replace('http://', '')}"
-            r = requests.head(test_url, headers=HEADERS, timeout=8,
-                              allow_redirects=True, verify=False)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+                r = requests.head(test_url, headers=HEADERS, timeout=8,
+                                  allow_redirects=True, verify=False)
             if r.status_code < 500:
                 base_url = test_url
                 result["base_url"] = base_url
