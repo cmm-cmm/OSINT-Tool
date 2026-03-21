@@ -8,6 +8,9 @@ Email Reconnaissance Module
 """
 import re
 import hashlib
+import random
+import smtplib
+import string
 import requests
 import dns.resolver
 from rich.console import Console
@@ -72,7 +75,43 @@ def check_hibp(email: str, api_key: str = None) -> dict:
     return result
 
 
-def check_gravatar(email: str) -> dict:
+def check_smtp_verify(email: str) -> dict:
+    """
+    Verify email deliverability via SMTP RCPT TO probe.
+    Also detects catch-all domains (accept any address) using a random probe.
+    Note: many servers block SMTP probing — used as best-effort.
+    """
+    result = {"checked": False, "exists": None, "catch_all": None, "smtp_server": None, "error": None}
+    domain = email.split("@")[1]
+    mx_records = check_mx_record(domain)
+    if not mx_records:
+        result["error"] = "No MX records found"
+        return result
+
+    mx_host = mx_records[0].rstrip(".")
+    result["smtp_server"] = mx_host
+    try:
+        with smtplib.SMTP(timeout=10) as smtp:
+            smtp.connect(mx_host, 25)
+            smtp.ehlo("probe.osint.local")
+            smtp.mail("probe@osint.local")
+            code, _ = smtp.rcpt(email)
+            result["checked"] = True
+            result["exists"] = (code == 250)
+            # Catch-all detection: random address on same domain
+            rand_user = "".join(random.choices(string.ascii_lowercase, k=14))
+            code2, _ = smtp.rcpt(f"{rand_user}@{domain}")
+            result["catch_all"] = (code2 == 250)
+    except smtplib.SMTPConnectError as e:
+        result["error"] = f"SMTP connect failed: {e}"
+    except smtplib.SMTPServerDisconnected:
+        result["error"] = "Server disconnected (likely blocked SMTP probing)"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+
     """Check if email has a Gravatar profile (public)."""
     email_hash = hashlib.md5(email.strip().lower().encode()).hexdigest()
     url = f"https://www.gravatar.com/{email_hash}.json"
@@ -182,11 +221,23 @@ def check_emailrep(email: str, api_key: str = None) -> dict:
 def generate_search_links(email: str) -> dict:
     """Generate public search engine dork links for an email."""
     encoded = requests.utils.quote(email)
+    username = email.split("@")[0]
+    enc_user = requests.utils.quote(username)
+    domain = email.split("@")[1]
+    enc_domain = requests.utils.quote(domain)
     return {
         "Google": f"https://www.google.com/search?q=%22{encoded}%22",
         "Bing": f"https://www.bing.com/search?q=%22{encoded}%22",
         "DuckDuckGo": f"https://duckduckgo.com/?q=%22{encoded}%22",
-        "GitHub": f"https://github.com/search?q=%22{encoded}%22&type=users",
+        "GitHub Users": f"https://github.com/search?q=%22{encoded}%22&type=users",
+        "GitHub Code": f"https://github.com/search?q=%22{encoded}%22&type=code",
+        "LinkedIn": f"https://www.linkedin.com/search/results/people/?keywords={encoded}",
+        "Twitter": f"https://twitter.com/search?q=%22{encoded}%22",
+        "HaveIBeenPwned": f"https://haveibeenpwned.com/account/{encoded}",
+        "Pastebin": f"https://www.google.com/search?q=%22{encoded}%22+site%3Apastebin.com",
+        "GrayhatWarfare": f"https://grayhatwarfare.com/files?query={encoded}",
+        "Holehe (username)": f"https://github.com/megadose/holehe",
+        "Username search": f"https://www.google.com/search?q=%22{enc_user}%22+site%3Atwitter.com+OR+site%3Agithub.com+OR+site%3Areddit.com",
     }
 
 
@@ -195,14 +246,25 @@ def email_recon(email: str, hibp_api_key: str = None, hunter_key: str = None, em
         return {"error": "Invalid email format"}
 
     domain = email.split("@")[1]
+    username = email.split("@")[0]
     result = {
         "email": email,
         "domain": domain,
+        "username": username,
         "valid_format": True,
         "mx_records": check_mx_record(domain),
         "gravatar": check_gravatar(email),
+        "smtp": check_smtp_verify(email),
         "hibp": check_hibp(email, hibp_api_key),
         "search_links": generate_search_links(email),
+        "username_pivot": [
+            {"platform": "GitHub", "url": f"https://github.com/{username}"},
+            {"platform": "GitLab", "url": f"https://gitlab.com/{username}"},
+            {"platform": "Twitter/X", "url": f"https://twitter.com/{username}"},
+            {"platform": "Reddit", "url": f"https://www.reddit.com/user/{username}/"},
+            {"platform": "LinkedIn", "url": f"https://www.linkedin.com/in/{username}/"},
+            {"platform": "Instagram", "url": f"https://www.instagram.com/{username}/"},
+        ],
     }
 
     if hunter_key:
@@ -220,6 +282,8 @@ def print_email_results(data: dict):
         return
 
     console.print(f"\n[bold cyan]═══ EMAIL RECON: {data['email']} ═══[/bold cyan]")
+    if data.get("username"):
+        console.print(f"  Username      : [cyan]{data['username']}[/cyan]")
 
     # MX Records
     mx = data.get("mx_records", [])
@@ -227,6 +291,18 @@ def print_email_results(data: dict):
     console.print(f"  Domain status : {status}")
     if mx:
         console.print(f"  MX Records    : {', '.join(mx[:3])}")
+
+    # SMTP verification
+    smtp = data.get("smtp") or {}
+    if smtp.get("checked"):
+        if smtp.get("catch_all"):
+            console.print(f"  SMTP          : [yellow]⚠ Catch-all domain (nhận mọi địa chỉ)[/yellow]  SMTP: {smtp.get('smtp_server', '')}")
+        elif smtp.get("exists") is True:
+            console.print(f"  SMTP          : [green]✓ Mailbox tồn tại[/green]  ({smtp.get('smtp_server', '')})")
+        elif smtp.get("exists") is False:
+            console.print(f"  SMTP          : [red]✗ Mailbox không tồn tại[/red]  ({smtp.get('smtp_server', '')})")
+    elif smtp.get("error"):
+        console.print(f"  SMTP          : [dim]{smtp['error']}[/dim]")
 
     # Gravatar
     g = data.get("gravatar", {})
@@ -317,4 +393,12 @@ def print_email_results(data: dict):
     # Search links
     console.print("\n  [bold]Search Links:[/bold]")
     for engine, link in data.get("search_links", {}).items():
-        console.print(f"    {engine:12}: [link]{link}[/link]")
+        console.print(f"    {engine:18}: [link]{link}[/link]")
+
+    # Username pivot suggestions
+    pivot = data.get("username_pivot") or []
+    if pivot:
+        console.print(f"\n  [bold]Username Pivot — '{data.get('username', '')}' trên các nền tảng:[/bold]")
+        for p in pivot:
+            console.print(f"    {p['platform']:16}: [cyan]{p['url']}[/cyan]")
+

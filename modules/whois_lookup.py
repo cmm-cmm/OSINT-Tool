@@ -22,18 +22,149 @@ DNS_RECORD_TYPES = ["A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA", "SRV"]
 HEADERS = {"User-Agent": "OSINT-Tool/1.0 (Educational/Research Purpose)"}
 
 COMMON_SUBDOMAINS = [
-    "www", "mail", "ftp", "api", "dev", "staging", "test", "admin", "vpn",
-    "remote", "secure", "shop", "blog", "app", "static", "cdn", "ns1", "ns2",
-    "smtp", "pop", "imap", "webmail", "portal", "forum", "wiki", "docs", "git",
-    "gitlab", "jenkins", "support", "help", "mx", "m", "mobile", "assets",
-    "media", "images", "download", "upload", "backup", "db", "status",
-    "monitor", "dashboard", "panel", "cpanel", "whm", "beta", "alpha", "demo",
-    "new", "old", "web", "auth", "login", "sso", "vpn2", "intranet",
+    # Core
+    "www", "www2", "www3", "m", "mobile", "wap",
+    "app", "apps", "web", "site", "home",
+    # API
+    "api", "api1", "api2", "api3", "api4", "api-v1", "api-v2", "api-v3",
+    "v1", "v2", "v3", "rest", "graphql", "gql", "grpc",
+    # Mail
+    "mail", "mail2", "mail3", "smtp", "smtp2", "smtps",
+    "imap", "pop", "pop3", "webmail", "email", "mx", "mx1", "mx2", "mx3",
+    "autodiscover", "autoconfig",
+    # FTP / Files
+    "ftp", "ftp2", "sftp", "files", "file", "transfer", "uploads", "upload",
+    "download", "downloads",
+    # CDN / Static
+    "cdn", "cdn1", "cdn2", "static", "static1", "static2",
+    "assets", "asset", "img", "images", "image", "media", "video", "videos",
+    "audio", "content", "resources", "res", "pub", "public",
+    # Dev / Environment
+    "dev", "dev1", "dev2", "development", "local",
+    "staging", "stage", "stg", "uat", "qa", "qas",
+    "test", "test1", "test2", "testing", "sandbox", "preview",
+    "beta", "alpha", "demo", "canary", "rc", "release",
+    # Admin / Control panels
+    "admin", "admin2", "administrator", "administration",
+    "panel", "dashboard", "cpanel", "whm", "plesk", "directadmin",
+    "manage", "management", "control", "console", "backend",
+    # Security / Auth
+    "auth", "auth2", "oauth", "oauth2", "oidc", "saml",
+    "sso", "sso2", "login", "logout", "account", "accounts",
+    "id", "identity", "iam", "keycloak", "okta", "ping",
+    "cert", "certs", "crl", "ca", "pki", "vault",
+    # Networking
+    "vpn", "vpn1", "vpn2", "vpn3", "remote", "rdp", "citrix",
+    "proxy", "gateway", "gw", "fw", "firewall", "waf",
+    "lb", "loadbalancer", "ha", "ha1", "ha2",
+    "ns", "ns1", "ns2", "ns3", "ns4", "dns", "dns1", "dns2",
+    # Infrastructure / DevOps
+    "git", "gitlab", "github", "bitbucket", "svn",
+    "jenkins", "ci", "cd", "cicd", "build", "builds",
+    "docker", "registry", "k8s", "kubernetes", "helm",
+    "ansible", "puppet", "chef", "terraform",
+    "nexus", "artifactory", "sonar", "sonarqube",
+    "jira", "confluence", "wiki", "docs",
+    # Monitoring / Logging
+    "monitor", "monitoring", "monitor2",
+    "status", "healthcheck", "health", "ping",
+    "metrics", "stats", "statistics",
+    "grafana", "kibana", "elasticsearch", "elastic", "splunk",
+    "prometheus", "alertmanager", "zabbix", "nagios", "datadog",
+    "logs", "log", "logging", "graylog", "logstash",
+    # Database
+    "db", "db1", "db2", "db3", "database", "mysql", "mariadb",
+    "postgres", "postgresql", "redis", "redis1", "redis2",
+    "mongo", "mongodb", "cassandra", "couchdb", "elasticsearch",
+    "memcache", "memcached", "rabbitmq", "kafka", "zookeeper",
+    # E-commerce / Business
+    "shop", "store", "market", "marketplace",
+    "cart", "checkout", "payment", "pay", "billing",
+    "invoice", "invoices", "order", "orders", "track",
+    "crm", "erp", "sales", "support", "helpdesk", "help",
+    "desk", "ticket", "tickets", "service",
+    # Communication
+    "chat", "im", "voip", "conference", "meet", "video",
+    "forum", "forums", "community", "social",
+    "newsletter", "news", "blog", "blog2", "press",
+    # Storage / Backup
+    "backup", "backups", "bak", "restore", "storage", "s3", "bucket",
+    "archive", "archives", "repo", "repository",
+    # Network ranges
+    "intranet", "internal", "private", "extranet",
+    "office", "corp", "corporate",
+    "secure", "ssl", "tls",
+    # Geographic — Global
+    "us", "us-east", "us-west", "eu", "eu-west", "eu-central",
+    "ap", "ap-southeast", "ap-northeast",
+    "sg", "hk", "jp", "kr", "au", "uk", "de", "fr", "nl",
+    "ca", "br", "in",
+    # Geographic — Vietnam specific
+    "vn", "hn", "hanoi", "hcm", "saigon", "hcmc",
+    "dn", "danang", "hp", "haiphong", "ct", "cantho",
+    "hue", "qn", "quangnguyen", "dl", "dalat", "vt", "vungtau",
+    "binhduong", "dongnai",
+    # Vietnam platforms / portals
+    "portal", "dichvu", "dang-ky", "tra-cuu",
+    "evn", "vnpt", "viettel",
+    # Security research targets
+    "bounty", "bug", "security", "vuln", "pentest",
+    # Misc
+    "old", "new", "legacy", "deprecated",
+    "redirect", "link", "url", "short",
+    "verify", "verification", "activate", "activation",
+    "token", "reset", "recover", "recovery",
+    "sitemap", "rss", "feed", "feeds", "webhook",
+    "sandbox2", "integration", "external", "ext",
 ]
 
 
+def check_rdap(domain: str) -> dict:
+    """Query RDAP for richer registrant/contact data (often bypasses GDPR-redacted WHOIS)."""
+    rdap_urls = [
+        f"https://rdap.org/domain/{domain}",
+        f"https://rdap.verisign.com/com/v1/domain/{domain}",
+    ]
+    for url in rdap_urls:
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=8)
+            if resp.status_code == 200:
+                d = resp.json()
+                result = {"found": True, "registrar": None, "status": [], "contacts": []}
+                result["status"] = d.get("status", [])
+                for entity in d.get("entities", []):
+                    roles = entity.get("roles", [])
+                    vcard_data = entity.get("vcardArray", [None, []])
+                    vcard_fields = vcard_data[1] if len(vcard_data) > 1 else []
+                    contact = {"roles": roles}
+                    for field in vcard_fields:
+                        if not isinstance(field, list) or len(field) < 4:
+                            continue
+                        name = field[0]
+                        value = field[3]
+                        if name == "fn":
+                            contact["name"] = value
+                        elif name == "email":
+                            contact["email"] = value
+                        elif name == "tel":
+                            contact["phone"] = str(value)
+                        elif name == "adr" and isinstance(value, list):
+                            parts = [str(p) for p in value if p]
+                            contact["address"] = " ".join(parts)
+                        elif name == "org":
+                            contact["org"] = value
+                    if len(contact) > 1:  # has more than just 'roles'
+                        result["contacts"].append(contact)
+                    if "registrar" in roles and contact.get("name"):
+                        result["registrar"] = contact["name"]
+                return result
+        except Exception:
+            continue
+    return {"found": False}
+
+
 def whois_lookup(target: str, timeout: int = 15) -> dict:
-    result = {"target": target, "whois": {}, "error": None}
+    result = {"target": target, "whois": {}, "rdap": None, "error": None}
     container = {}
 
     def _do_whois():
@@ -71,6 +202,12 @@ def whois_lookup(target: str, timeout: int = 15) -> dict:
             "city": w.city,
             "address": w.address,
         }
+
+    # RDAP enrichment — richer contact data, often available even when WHOIS is redacted
+    rdap = check_rdap(target)
+    if rdap.get("found"):
+        result["rdap"] = rdap
+
     return result
 
 
@@ -126,6 +263,22 @@ def print_whois(data: dict):
             table.add_row(field.replace("_", " ").title(), str(value))
 
     console.print(table)
+
+    # RDAP enrichment display
+    rdap = data.get("rdap")
+    if rdap and rdap.get("found"):
+        console.print("\n[bold cyan]─── RDAP Contact Data ───[/bold cyan]")
+        if rdap.get("registrar"):
+            console.print(f"  Registrar: [green]{rdap['registrar']}[/green]")
+        if rdap.get("status"):
+            console.print(f"  Status: [yellow]{', '.join(rdap['status'])}[/yellow]")
+        for contact in rdap.get("contacts", []):
+            roles = ", ".join(contact.get("roles", []))
+            console.print(f"  [bold]Contact ({roles})[/bold]")
+            for key in ("name", "org", "email", "phone", "address"):
+                val = contact.get(key)
+                if val:
+                    console.print(f"    {key.title()}: {val}")
 
 
 def print_dns(data: dict):
