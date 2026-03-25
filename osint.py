@@ -31,6 +31,7 @@ from modules.whois_lookup import (
     subdomain_enum, print_subdomains,
     check_email_security, print_email_security,
     test_zone_transfer, print_zone_transfer,
+    check_dns_security, print_dns_security,
 )
 from modules.email_recon import email_recon, print_email_results, validate_email
 from modules.username_search import username_search, print_username_results
@@ -196,6 +197,14 @@ def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip,
         all_data["zone_transfer"] = zt_data
         if out_fmt == "table":
             print_zone_transfer(zt_data)
+
+        # DNS Security Analysis (DNSSEC, CAA, DANE)
+        if out_fmt == "table":
+            console.print("[dim]Analyzing DNS security (DNSSEC, CAA, DANE)...[/dim]")
+        dns_sec_data = check_dns_security(target)
+        all_data["dns_security"] = dns_sec_data
+        if out_fmt == "table":
+            print_dns_security(dns_sec_data)
 
     if do_subdomain:
         if out_fmt == "table":

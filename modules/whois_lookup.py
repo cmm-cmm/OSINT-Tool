@@ -238,6 +238,94 @@ def dns_enum(target: str) -> dict:
     return result
 
 
+def check_dns_security(target: str) -> dict:
+    """
+    Check DNS security features: DNSSEC, CAA records, DANE (TLSA).
+    Returns dict with security status and recommendations.
+    """
+    result = {
+        "target": target,
+        "dnssec": {"enabled": False, "details": []},
+        "caa": {"records": [], "has_issue": False, "has_wildcard": False},
+        "dane": {"records": [], "enabled": False},
+        "security_score": 0,
+        "recommendations": [],
+    }
+
+    resolver = dns.resolver.Resolver()
+    resolver.timeout = 5
+    resolver.lifetime = 5
+
+    # Check DNSSEC
+    try:
+        # Try to get DNSKEY records (indicates DNSSEC is configured)
+        answers = resolver.resolve(target, "DNSKEY")
+        if answers:
+            result["dnssec"]["enabled"] = True
+            result["dnssec"]["details"].append(f"Found {len(answers)} DNSKEY records")
+            result["security_score"] += 30
+        else:
+            result["recommendations"].append("Enable DNSSEC to prevent DNS spoofing attacks")
+    except dns.resolver.NoAnswer:
+        result["dnssec"]["details"].append("DNSSEC not configured")
+        result["recommendations"].append("Enable DNSSEC to prevent DNS spoofing attacks")
+    except Exception as e:
+        result["dnssec"]["details"].append(f"Unable to check: {str(e)[:50]}")
+
+    # Check CAA records (Certificate Authority Authorization)
+    try:
+        answers = resolver.resolve(target, "CAA")
+        for rdata in answers:
+            caa_str = str(rdata)
+            result["caa"]["records"].append(caa_str)
+
+            # Parse CAA record
+            if "issue" in caa_str.lower():
+                result["caa"]["has_issue"] = True
+            if "issuewild" in caa_str.lower():
+                result["caa"]["has_wildcard"] = True
+
+        if result["caa"]["records"]:
+            result["security_score"] += 25
+        else:
+            result["recommendations"].append(
+                "Add CAA records to control which CAs can issue certificates for your domain"
+            )
+    except dns.resolver.NoAnswer:
+        result["recommendations"].append(
+            "Add CAA records to control which CAs can issue certificates for your domain"
+        )
+    except dns.resolver.NXDOMAIN:
+        pass
+    except Exception:
+        pass
+
+    # Check DANE/TLSA records (for _443._tcp subdomain)
+    try:
+        tlsa_query = f"_443._tcp.{target}"
+        answers = resolver.resolve(tlsa_query, "TLSA")
+        for rdata in answers:
+            result["dane"]["records"].append(str(rdata))
+            result["dane"]["enabled"] = True
+
+        if result["dane"]["enabled"]:
+            result["security_score"] += 20
+    except Exception:
+        pass
+
+    # Grade security score
+    if result["security_score"] >= 70:
+        result["grade"] = "A"
+    elif result["security_score"] >= 50:
+        result["grade"] = "B"
+    elif result["security_score"] >= 30:
+        result["grade"] = "C"
+    else:
+        result["grade"] = "F"
+
+    return result
+
+
 def resolve_ip(domain: str) -> str:
     try:
         return socket.gethostbyname(domain)
@@ -662,3 +750,56 @@ def print_zone_transfer(data: dict):
         tested = ", ".join(data.get("tested_ns", []))
         console.print(f"  [green]✓ Zone transfer bị từ chối bởi tất cả nameservers[/green]")
         console.print(f"  [dim]Đã kiểm tra: {tested}[/dim]")
+
+
+def print_dns_security(data: dict):
+    """Display DNS security analysis results (DNSSEC, CAA, DANE)."""
+    target = data.get("target", "")
+    console.print(f"\n[bold cyan]═══ DNS SECURITY ANALYSIS: {target} ═══[/bold cyan]")
+
+    score = data.get("security_score", 0)
+    grade = data.get("grade", "F")
+    grade_colors = {"A": "bold green", "B": "green", "C": "yellow", "F": "red"}
+    grade_color = grade_colors.get(grade, "white")
+
+    console.print(f"  [bold]DNS Security Grade:[/bold] [{grade_color}]{grade}[/{grade_color}] ({score}/75)")
+
+    # DNSSEC
+    dnssec = data.get("dnssec", {})
+    if dnssec.get("enabled"):
+        console.print("\n  [bold green]✓ DNSSEC:[/bold green] [green]Enabled[/green]")
+        for detail in dnssec.get("details", []):
+            console.print(f"    • {detail}")
+    else:
+        console.print("\n  [bold red]✗ DNSSEC:[/bold red] [red]Not configured[/red]")
+        for detail in dnssec.get("details", []):
+            console.print(f"    • {detail}")
+
+    # CAA Records
+    caa = data.get("caa", {})
+    caa_records = caa.get("records", [])
+    if caa_records:
+        console.print(f"\n  [bold green]✓ CAA Records:[/bold green] [green]{len(caa_records)} record(s) found[/green]")
+        for record in caa_records[:5]:
+            console.print(f"    • {record}")
+        if len(caa_records) > 5:
+            console.print(f"    [dim]... and {len(caa_records) - 5} more[/dim]")
+    else:
+        console.print("\n  [bold red]✗ CAA Records:[/bold red] [red]Not configured[/red]")
+
+    # DANE/TLSA
+    dane = data.get("dane", {})
+    if dane.get("enabled"):
+        console.print(f"\n  [bold green]✓ DANE/TLSA:[/bold green] [green]{len(dane['records'])} record(s) found[/green]")
+        for record in dane.get("records", [])[:3]:
+            console.print(f"    • {record}")
+    else:
+        console.print("\n  [bold yellow]⚠ DANE/TLSA:[/bold yellow] [yellow]Not configured (optional)[/yellow]")
+
+    # Recommendations
+    recommendations = data.get("recommendations", [])
+    if recommendations:
+        console.print("\n  [bold yellow]📋 Security Recommendations:[/bold yellow]")
+        for i, rec in enumerate(recommendations, 1):
+            console.print(f"    {i}. {rec}")
+
