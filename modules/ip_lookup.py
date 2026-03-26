@@ -27,7 +27,7 @@ COMMON_PORTS = [
     8080, 8443, 8888,  # Alt HTTP
     445, 139,  # SMB
     389, 636,  # LDAP
-    1521, 1433, 3306, 5432,  # Database ports
+    1521,  # Oracle
 ]
 
 # Security header scoring weights with remediation guidance
