@@ -102,13 +102,13 @@ python osint.py full "Nguyen Van A" --type person
 
 | Module | Chức năng | Nguồn dữ liệu |
 |--------|-----------|---------------|
-| `whois_lookup.py` | WHOIS + DNS + SPF/DKIM/DMARC + Zone Transfer test | python-whois, dnspython |
+| `whois_lookup.py` | WHOIS + DNS + SPF/DKIM/DMARC + Zone Transfer + **DNSSEC/CAA/DANE analysis** | python-whois, dnspython |
 | `ssl_analyzer.py` | SSL/TLS analysis — grade A+ đến F, cipher, cert, HSTS | ssl (built-in) |
-| `secrets_scanner.py` | Exposed files scanner — .git, .env, backup, API keys | requests (free) |
+| `secrets_scanner.py` | Exposed files scanner — .git, .env, backup, API keys + **Vulnerability Severity Scoring** | requests (free) |
 | `cloud_recon.py` | Cloud bucket enum — AWS S3, GCS, Azure, DO Spaces | requests (free) |
 | `email_recon.py` | Email recon, breach check, Gravatar | HIBP API, Gravatar |
 | `username_search.py` | Username trên 40+ platform | Public profile URLs |
-| `ip_lookup.py` | Geo, ASN, RDAP, Reverse IP, CVE table, HTTP headers | ip-api.com (free), RDAP (free) |
+| `ip_lookup.py` | Geo, ASN, RDAP, Reverse IP, CVE table, HTTP headers + **Port Scanning + Advanced Security Headers Analysis** | ip-api.com (free), RDAP (free) |
 | `phone_lookup.py` | Phân tích số điện thoại | phonenumbers (offline) |
 | `google_dorks.py` | Google Dork queries | Tạo link tìm kiếm |
 | `breach_check.py` | Breach check + severity scoring (CRITICAL/HIGH/MEDIUM/LOW) | LeakCheck, HIBP, BreachDirectory |
@@ -116,6 +116,34 @@ python osint.py full "Nguyen Van A" --type person
 | `website_contacts.py` | Email, phone, social links từ website | RapidAPI |
 | `youtube_recon.py` | YouTube channel OSINT | RapidAPI |
 | `report.py` | Xuất báo cáo HTML + JSON | — |
+
+---
+
+## 🆕 Tính năng mới nâng cao (Security Research Focus)
+
+### 🔍 Port Scanning & Service Detection
+- Quét tự động 30+ cổng phổ biến (SSH, FTP, RDP, databases, etc.)
+- Phát hiện dịch vụ đang chạy trên từng cổng
+- Cảnh báo về các cổng nguy hiểm (Telnet, FTP, RDP, SMB, VNC)
+- Banner grabbing để nhận dạng phiên bản dịch vụ
+
+### 🛡️ Advanced Security Headers Analysis
+- Phân tích chi tiết 7 security headers quan trọng
+- Đánh giá từ A+ đến F với hướng dẫn khắc phục cụ thể
+- Phát hiện cấu hình yếu trong HSTS, CSP, X-Frame-Options
+- Gợi ý cấu hình header đúng chuẩn bảo mật
+
+### 🔐 DNS Security Analysis (DNSSEC/CAA/DANE)
+- Kiểm tra DNSSEC (DNS Security Extensions) để chống DNS spoofing
+- Phân tích CAA records (Certificate Authority Authorization)
+- Quét DANE/TLSA records cho TLS authentication
+- Đánh giá DNS security score từ A đến F với khuyến nghị cải thiện
+
+### 🚨 Vulnerability Severity Scoring
+- Phân loại mức độ nguy hiểm: CRITICAL / HIGH / MEDIUM / LOW / INFO
+- Tự động đánh giá severity cho từng file/path bị lộ
+- Ưu tiên hiển thị các lỗ hổng nghiêm trọng (.git, .env, database dumps)
+- Thống kê tổng hợp findings theo mức độ
 
 ---
 

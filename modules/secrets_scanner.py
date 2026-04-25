@@ -12,6 +12,7 @@ Quét các file nhạy cảm bị lộ trên website:
   - AWS/GCP/Azure key patterns
   - Cloud storage bucket URLs trong source
   - phpinfo() exposure
+  - Vulnerability risk scoring
 
 Không cần API key — chỉ dùng requests.
 """
@@ -26,6 +27,57 @@ from rich import box
 console = Console()
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; OSINT-Tool/1.0; +Research)"}
 TIMEOUT = 8
+
+# Severity levels for findings
+SEVERITY_CRITICAL = "CRITICAL"
+SEVERITY_HIGH = "HIGH"
+SEVERITY_MEDIUM = "MEDIUM"
+SEVERITY_LOW = "LOW"
+SEVERITY_INFO = "INFO"
+
+# Path severity mapping
+PATH_SEVERITY = {
+    ".git/": SEVERITY_CRITICAL,
+    ".env": SEVERITY_CRITICAL,
+    ".env.production": SEVERITY_CRITICAL,
+    "id_rsa": SEVERITY_CRITICAL,
+    "database.sql": SEVERITY_CRITICAL,
+    "db.sql": SEVERITY_CRITICAL,
+    "dump.sql": SEVERITY_CRITICAL,
+    "backup.sql": SEVERITY_CRITICAL,
+    "wp-config.php": SEVERITY_CRITICAL,
+    ".htpasswd": SEVERITY_HIGH,
+    "phpinfo.php": SEVERITY_HIGH,
+    "actuator/env": SEVERITY_HIGH,
+    "backup.zip": SEVERITY_HIGH,
+    "admin/": SEVERITY_MEDIUM,
+    "swagger.json": SEVERITY_MEDIUM,
+    "graphql": SEVERITY_MEDIUM,
+    "robots.txt": SEVERITY_INFO,
+    "security.txt": SEVERITY_INFO,
+}
+
+def get_finding_severity(path: str, has_secrets: bool = False) -> str:
+    """Determine severity of a finding based on path and content."""
+    if has_secrets:
+        return SEVERITY_CRITICAL
+
+    path_lower = path.lower()
+
+    # Check exact matches first
+    for pattern, severity in PATH_SEVERITY.items():
+        if pattern in path_lower:
+            return severity
+
+    # Default based on file type
+    if any(ext in path_lower for ext in ['.bak', '.old', '.backup', '.sql', '.zip', '.tar.gz']):
+        return SEVERITY_HIGH
+    elif any(word in path_lower for word in ['config', 'credentials', 'password', 'secret']):
+        return SEVERITY_HIGH
+    elif any(word in path_lower for word in ['admin', 'debug', 'test', 'swagger', 'api-docs']):
+        return SEVERITY_MEDIUM
+
+    return SEVERITY_LOW
 
 # ─── Sensitive paths to probe ─────────────────────────────────────────────────
 
@@ -229,21 +281,28 @@ def _probe_path(base_url: str, path: str) -> dict | None:
         if resp.status_code in (200, 206):
             content_len = len(resp.content)
             content_preview = resp.text[:200].strip() if resp.text else ""
+
+            # Determine severity
+            severity = get_finding_severity(path, has_secrets=False)
+
             return {
                 "path": path,
                 "url": url,
                 "status": resp.status_code,
                 "size": content_len,
                 "preview": content_preview,
+                "severity": severity,
             }
         elif resp.status_code == 403:
             # 403 means it exists but access is denied (still useful intel)
+            severity = get_finding_severity(path, has_secrets=False)
             return {
                 "path": path,
                 "url": url,
                 "status": 403,
                 "size": 0,
                 "preview": "(access denied — file exists)",
+                "severity": severity,
             }
     except requests.exceptions.SSLError:
         pass

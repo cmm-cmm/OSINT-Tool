@@ -6,8 +6,12 @@ IP & Domain Intelligence Module
 - Reverse IP lookup via HackerTarget (free tier)
 - HTTP Security Headers Scoring
 - Tech stack detection
+- Port scanning and service detection
+- Advanced vulnerability analysis
 """
 import time
+import socket
+import concurrent.futures
 import requests
 from rich.console import Console
 from rich.table import Table
@@ -15,15 +19,58 @@ from rich.table import Table
 console = Console()
 HEADERS = {"User-Agent": "OSINT-Tool/1.0 (Educational/Research Purpose)"}
 
-# Security header scoring weights
+# Common ports to scan for security research
+COMMON_PORTS = [
+    21, 22, 23, 25, 53, 80, 110, 143, 443, 465, 587, 993, 995,  # Common services
+    3306, 5432, 1433, 27017, 6379,  # Databases
+    3389, 5900,  # Remote desktop
+    8080, 8443, 8888,  # Alt HTTP
+    445, 139,  # SMB
+    389, 636,  # LDAP
+    1521,  # Oracle
+]
+
+# Security header scoring weights with remediation guidance
 _SEC_HEADERS = {
-    "strict-transport-security": ("HSTS", 20),
-    "content-security-policy": ("CSP", 25),
-    "x-frame-options": ("X-Frame-Options", 15),
-    "x-content-type-options": ("X-Content-Type-Options", 10),
-    "referrer-policy": ("Referrer-Policy", 10),
-    "permissions-policy": ("Permissions-Policy", 10),
-    "x-xss-protection": ("X-XSS-Protection", 10),
+    "strict-transport-security": (
+        "HSTS", 20,
+        "Add: Strict-Transport-Security: max-age=31536000; includeSubDomains; preload"
+    ),
+    "content-security-policy": (
+        "CSP", 25,
+        "Add: Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'"
+    ),
+    "x-frame-options": (
+        "X-Frame-Options", 15,
+        "Add: X-Frame-Options: DENY or SAMEORIGIN"
+    ),
+    "x-content-type-options": (
+        "X-Content-Type-Options", 10,
+        "Add: X-Content-Type-Options: nosniff"
+    ),
+    "referrer-policy": (
+        "Referrer-Policy", 10,
+        "Add: Referrer-Policy: strict-origin-when-cross-origin"
+    ),
+    "permissions-policy": (
+        "Permissions-Policy", 10,
+        "Add: Permissions-Policy: geolocation=(), camera=(), microphone=()"
+    ),
+    "x-xss-protection": (
+        "X-XSS-Protection", 10,
+        "Add: X-XSS-Protection: 1; mode=block (legacy browsers)"
+    ),
+}
+
+# Service identification by port
+PORT_SERVICES = {
+    21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 53: "DNS",
+    80: "HTTP", 110: "POP3", 143: "IMAP", 443: "HTTPS",
+    445: "SMB", 465: "SMTPS", 587: "SMTP", 993: "IMAPS", 995: "POP3S",
+    3306: "MySQL", 5432: "PostgreSQL", 1433: "MSSQL", 27017: "MongoDB",
+    6379: "Redis", 3389: "RDP", 5900: "VNC",
+    8080: "HTTP-Alt", 8443: "HTTPS-Alt", 8888: "HTTP-Alt",
+    389: "LDAP", 636: "LDAPS", 1521: "Oracle",
 }
 
 # Tech fingerprinting signatures
@@ -89,6 +136,71 @@ def reverse_ip_lookup(ip: str) -> list:
     return []
 
 
+def scan_port(host: str, port: int, timeout: float = 1.0) -> dict:
+    """Scan a single port and return status."""
+    result = {"port": port, "state": "closed", "service": PORT_SERVICES.get(port, "unknown"), "banner": ""}
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result_code = sock.connect_ex((host, port))
+
+        if result_code == 0:
+            result["state"] = "open"
+            # Try to grab banner
+            try:
+                sock.send(b"HEAD / HTTP/1.0\r\n\r\n")
+                banner = sock.recv(1024).decode('utf-8', errors='ignore').strip()
+                if banner:
+                    result["banner"] = banner[:200]
+            except:
+                pass
+
+        sock.close()
+    except socket.timeout:
+        result["state"] = "filtered"
+    except socket.error:
+        result["state"] = "closed"
+    except Exception:
+        result["state"] = "error"
+
+    return result
+
+
+def port_scan(host: str, ports: list = None, max_workers: int = 50) -> dict:
+    """Scan multiple ports concurrently for open services."""
+    if ports is None:
+        ports = COMMON_PORTS
+
+    open_ports = []
+    filtered_ports = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_port = {executor.submit(scan_port, host, port): port for port in ports}
+
+        for future in concurrent.futures.as_completed(future_to_port):
+            try:
+                result = future.result()
+                if result["state"] == "open":
+                    open_ports.append(result)
+                elif result["state"] == "filtered":
+                    filtered_ports.append(result)
+            except Exception:
+                pass
+
+    # Sort by port number
+    open_ports.sort(key=lambda x: x["port"])
+    filtered_ports.sort(key=lambda x: x["port"])
+
+    return {
+        "total_scanned": len(ports),
+        "open_ports": open_ports,
+        "filtered_ports": filtered_ports,
+        "open_count": len(open_ports),
+        "filtered_count": len(filtered_ports),
+    }
+
+
 def get_headers_info(domain: str) -> dict:
     """Grab HTTP headers from target for tech fingerprinting and security scoring."""
     result = {}
@@ -124,21 +236,49 @@ def get_headers_info(domain: str) -> dict:
 
 
 def score_security_headers(headers: dict) -> dict:
-    """Score HTTP security headers. Returns score 0-100 and grade A-F."""
+    """Score HTTP security headers with detailed remediation guidance."""
     if not headers:
-        return {"score": 0, "grade": "F", "present": [], "missing": list(_SEC_HEADERS.keys())}
+        return {
+            "score": 0,
+            "grade": "F",
+            "present": [],
+            "missing": [{"header": k, "label": v[0], "fix": v[2]} for k, v in _SEC_HEADERS.items()],
+        }
 
     present = []
     missing = []
     score = 0
     h_lower = {k.lower(): v for k, v in headers.items()}
 
-    for header, (label, weight) in _SEC_HEADERS.items():
+    for header, (label, weight, fix_advice) in _SEC_HEADERS.items():
         if header in h_lower:
-            present.append({"header": header, "label": label, "value": h_lower[header][:80]})
-            score += weight
+            value = h_lower[header]
+            # Analyze header value for security issues
+            issues = []
+            if header == "strict-transport-security":
+                if "max-age" not in value.lower():
+                    issues.append("Missing max-age directive")
+                elif "max-age=0" in value.lower() or "max-age = 0" in value.lower():
+                    issues.append("max-age is 0 (HSTS disabled)")
+                if "includesubdomains" not in value.lower().replace(" ", ""):
+                    issues.append("Consider adding includeSubDomains")
+            elif header == "x-frame-options":
+                if value.lower() not in ["deny", "sameorigin"]:
+                    issues.append(f"Weak value: {value}")
+            elif header == "content-security-policy":
+                if "'unsafe-eval'" in value.lower() or "'unsafe-inline'" in value.lower():
+                    issues.append("Contains unsafe directives")
+
+            present.append({
+                "header": header,
+                "label": label,
+                "value": value[:80],
+                "issues": issues
+            })
+            # Reduce score if there are issues
+            score += weight if not issues else weight // 2
         else:
-            missing.append({"header": header, "label": label})
+            missing.append({"header": header, "label": label, "fix": fix_advice})
 
     if score >= 90:
         grade = "A+"
@@ -431,12 +571,14 @@ def rdap_lookup(ip_or_domain: str) -> dict:
     return result
 
 
-def ip_lookup(target: str, virustotal_key: str = None, shodan_key: str = None, abuseipdb_key: str = None) -> dict:
+def ip_lookup(target: str, virustotal_key: str = None, shodan_key: str = None, abuseipdb_key: str = None,
+              enable_port_scan: bool = True) -> dict:
     geo = ip_geolocation(target)
     rev = []
     headers_info = {}
     sec_score = {}
     tech_stack = {}
+    port_scan_results = {}
     is_ip = not any(c.isalpha() for c in target)
 
     if geo.get("success"):
@@ -461,6 +603,12 @@ def ip_lookup(target: str, virustotal_key: str = None, shodan_key: str = None, a
     ip_for_api = geo["data"].get("query", target) if geo.get("success") else target
     # resolved_ip: use the geo-resolved IP for Shodan/AbuseIPDB even when target is a domain
     resolved_ip = ip_for_api if (ip_for_api and not any(c.isalpha() for c in ip_for_api)) else None
+
+    # Port scanning (if enabled and we have an IP)
+    if enable_port_scan and resolved_ip:
+        console.print("  [dim]Scanning common ports...[/dim]")
+        port_scan_results = port_scan(resolved_ip)
+        result["port_scan"] = port_scan_results
 
     # RDAP lookup (free, no key needed)
     console.print("  [dim]Running RDAP lookup...[/dim]")
@@ -564,12 +712,56 @@ def print_ip_results(data: dict):
         grade_color = {"A+": "bold green", "A": "green", "B": "cyan",
                        "C": "yellow", "D": "dark_orange", "F": "red"}.get(grade, "white")
         console.print(f"\n  [bold]Security Headers Score:[/bold] [{grade_color}]{grade}[/{grade_color}] ({score}/100)")
-        if sec.get("missing"):
-            missing_labels = ", ".join(m["label"] for m in sec["missing"])
-            console.print(f"  [dim]  Missing: {missing_labels}[/dim]")
+
         if sec.get("present"):
+            console.print("\n  [bold green]✓ Present Headers:[/bold green]")
             for p in sec["present"]:
-                console.print(f"    [green]✓[/green] {p['label']}")
+                status = "[green]✓[/green]" if not p.get("issues") else "[yellow]⚠[/yellow]"
+                console.print(f"    {status} {p['label']}: [dim]{p['value'][:60]}[/dim]")
+                if p.get("issues"):
+                    for issue in p["issues"]:
+                        console.print(f"      [yellow]⚠ {issue}[/yellow]")
+
+        if sec.get("missing"):
+            console.print("\n  [bold red]✗ Missing Headers:[/bold red]")
+            for m in sec["missing"]:
+                console.print(f"    [red]✗[/red] {m['label']}")
+                console.print(f"      [dim]{m['fix']}[/dim]")
+
+    # Port Scan Results
+    port_scan = data.get("port_scan", {})
+    if port_scan and port_scan.get("open_count", 0) > 0:
+        open_ports = port_scan.get("open_ports", [])
+        console.print(f"\n  [bold]Port Scan Results:[/bold] [cyan]{port_scan['open_count']} open port(s)[/cyan] / {port_scan['total_scanned']} scanned")
+
+        from rich.table import Table as RTable
+        port_tbl = RTable(show_header=True, header_style="bold cyan", box=None, padding=(0, 1))
+        port_tbl.add_column("Port", width=8)
+        port_tbl.add_column("State", width=10)
+        port_tbl.add_column("Service", width=15)
+        port_tbl.add_column("Banner", style="dim", max_width=50)
+
+        for p in open_ports[:20]:  # Show top 20
+            state_color = "green" if p["state"] == "open" else "yellow"
+            port_tbl.add_row(
+                str(p["port"]),
+                f"[{state_color}]{p['state']}[/{state_color}]",
+                p["service"],
+                p.get("banner", "")[:50]
+            )
+
+        console.print(port_tbl)
+
+        # Security warnings for risky ports
+        risky_ports = {21: "FTP", 23: "Telnet", 3389: "RDP", 5900: "VNC", 445: "SMB"}
+        open_risky = [p for p in open_ports if p["port"] in risky_ports]
+        if open_risky:
+            console.print("\n  [bold red]⚠ Security Warning:[/bold red]")
+            for p in open_risky:
+                console.print(f"    [red]• Port {p['port']} ({risky_ports[p['port']]}) is open - potential security risk[/red]")
+
+    elif port_scan:
+        console.print(f"\n  [dim]Port Scan: No open ports found ({port_scan['total_scanned']} ports scanned)[/dim]")
 
     # Tech Stack
     tech = data.get("tech_stack", {})
