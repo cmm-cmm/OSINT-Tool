@@ -47,21 +47,6 @@ from modules.cloud_recon import cloud_recon, print_cloud_recon
 
 console = Console()
 
-BANNER = Panel(
-    Align.center(
-        Text.from_markup(
-            "[bold cyan]OSINT Tool[/bold cyan]\n"
-            "[white]Open Source Intelligence Toolkit[/white]\n"
-            "[dim]Educational and lawful research only[/dim]"
-        )
-    ),
-    box=box.ROUNDED,
-    border_style="bright_blue",
-    title="[bold magenta]OSINT[/bold magenta]",
-    subtitle="[green]v1.0.0[/green]",
-    padding=(1, 2),
-)
-
 _DOMAIN_RE = re.compile(
     r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
 )
@@ -767,7 +752,6 @@ def cmd_menu():
     Example: python osint.py menu
     """
     from rich.table import Table as RTable
-    print_banner()
 
     MENU_ITEMS = [
         ("1",  "Domain / IP Investigation",                      "domain"),
@@ -785,6 +769,7 @@ def cmd_menu():
 
     while True:
         console.clear()
+        print_banner()
         menu_panel = Panel(
             Align.center(Text.from_markup("[bold cyan]OSINT Interactive Menu[/bold cyan]\n[white]Select an option below to start a scan[/white]")),
             box=box.ROUNDED,
