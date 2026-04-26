@@ -25,6 +25,8 @@ load_dotenv(Path(__file__).parent / ".env")
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
+from rich.align import Align
+from rich import box
 
 from modules.whois_lookup import (
     whois_lookup, dns_enum, resolve_ip, print_whois, print_dns,
@@ -44,6 +46,21 @@ from modules.secrets_scanner import secrets_scan, print_secrets_results
 from modules.cloud_recon import cloud_recon, print_cloud_recon
 
 console = Console()
+
+BANNER = Panel(
+    Align.center(
+        Text.from_markup(
+            "[bold cyan]OSINT Tool[/bold cyan]\n"
+            "[white]Open Source Intelligence Toolkit[/white]\n"
+            "[dim]Educational and lawful research only[/dim]"
+        )
+    ),
+    box=box.ROUNDED,
+    border_style="bright_blue",
+    title="[bold magenta]OSINT[/bold magenta]",
+    subtitle="[green]v1.0.0[/green]",
+    padding=(1, 2),
+)
 
 _DOMAIN_RE = re.compile(
     r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
@@ -86,21 +103,41 @@ def _load_targets(single: str | None, targets_file: str | None, mode: str) -> li
     return []
 
 
-BANNER = """
-[bold cyan]
- ██████╗ ███████╗██╗███╗   ██╗████████╗    ████████╗ ██████╗  ██████╗ ██╗
-██╔═══██╗██╔════╝██║████╗  ██║╚══██╔══╝       ██╔══╝██╔═══██╗██╔═══██╗██║
-██║   ██║███████╗██║██╔██╗ ██║   ██║    █████╗██║   ██║   ██║██║   ██║██║
-██║   ██║╚════██║██║██║╚██╗██║   ██║    ╚════╝██║   ██║   ██║██║   ██║██║
-╚██████╔╝███████║██║██║ ╚████║   ██║          ██║   ╚██████╔╝╚██████╔╝███████╗
- ╚═════╝ ╚══════╝╚═╝╚═╝  ╚═══╝   ╚═╝          ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝
-[/bold cyan]
-[dim]Open Source Intelligence Tool — Educational & Research Use Only[/dim]
-"""
+BANNER = Panel(
+    Align.center(
+        Text.from_markup(
+            "[bold cyan]OSINT Tool[/bold cyan]\n"
+            "[white]Open Source Intelligence Toolkit[/white]\n"
+            "[dim]Educational and lawful research only[/dim]"
+        )
+    ),
+    box=box.ROUNDED,
+    border_style="bright_blue",
+    title="[bold magenta]OSINT[/bold magenta]",
+    subtitle="[green]v1.0.0[/green]",
+    padding=(1, 2),
+)
 
 
 def print_banner():
+    console.clear()
     console.print(BANNER)
+
+
+def print_section_header(title: str, subtitle: str | None = None) -> None:
+    header = Text(title, style="bold white")
+    if subtitle:
+        header.append("\n")
+        header.append(subtitle, style="dim")
+    console.print(
+        Panel(
+            Align.center(header),
+            box=box.ROUNDED,
+            border_style="cyan",
+            padding=(1, 2),
+            expand=False,
+        )
+    )
 
 
 # ─── CLI Commands ────────────────────────────────────────────────────────────
@@ -161,8 +198,7 @@ def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip,
 
     if out_fmt == "table":
         print_banner()
-
-    console.print(f"\n[bold]Target:[/bold] [green]{target}[/green]\n")
+        print_section_header(f"Target: [green]{target}[/green]", "Domain/IP investigation")
 
     all_data = {}
 
@@ -748,22 +784,39 @@ def cmd_menu():
     ]
 
     while True:
-        menu_table = RTable(show_header=False, box=None, padding=(0, 2))
+        console.clear()
+        menu_panel = Panel(
+            Align.center(Text.from_markup("[bold cyan]OSINT Interactive Menu[/bold cyan]\n[white]Select an option below to start a scan[/white]")),
+            box=box.ROUNDED,
+            border_style="bright_blue",
+            title="[bold magenta]OSINT Tool[/bold magenta]",
+            subtitle="[green]Interactive mode[/green]",
+            padding=(1, 2),
+        )
+        console.print(menu_panel)
+
+        menu_table = RTable(show_header=False, box=box.SIMPLE_HEAVY, padding=(0, 2))
         menu_table.add_column("Key", style="bold cyan", width=4)
         menu_table.add_column("Option", style="white")
         for key, label, _ in MENU_ITEMS:
             menu_table.add_row(f"[{key}]", label)
 
-        console.print("\n[bold cyan]═══ MAIN MENU ═══[/bold cyan]")
         console.print(menu_table)
 
-        choice = Prompt.ask("\n[bold]Select[/bold]", choices=[m[0] for m in MENU_ITEMS], default="0", show_choices=False)
+        choice = Prompt.ask("\n[bold]Select[/bold]", choices=[m[0] for m in MENU_ITEMS], default="0", show_choices=True)
         if choice == "0":
             console.print("[dim]Goodbye.[/dim]")
             break
 
         _, label, mode = next(m for m in MENU_ITEMS if m[0] == choice)
-        console.rule(f"[bold cyan]{label}[/bold cyan]")
+        console.print(
+            Panel(
+                Text(label, style="bold white"),
+                box=box.ROUNDED,
+                border_style="cyan",
+                expand=False,
+            )
+        )
 
         output_dir = os.getenv("OSINT_OUTPUT_DIR", ".")
         do_report = Confirm.ask("Save report?", default=False)
