@@ -57,6 +57,25 @@ _ACTORID_RE   = re.compile(r'"actorID"\s*:\s*"(\d+)"')
 # Suspicious username pattern
 _SUSPICIOUS_USER_RE = re.compile(r'^[a-z]{2,}[_\d]{4,}$', re.IGNORECASE)
 
+# Social media URL patterns for cross-platform footprint extraction
+_SOCIAL_LINK_PATTERNS = [
+    ("Instagram",  re.compile(r'instagram\.com/([A-Za-z0-9_][A-Za-z0-9_.]{0,29})(?:[/?]|$|\s)', re.I)),
+    ("Twitter/X",  re.compile(r'(?:twitter|x)\.com/([A-Za-z0-9_]{1,20})(?:[/?]|$|\s)', re.I)),
+    ("YouTube",    re.compile(r'youtube\.com/(?:c/|channel/|@)([A-Za-z0-9_.\-]{1,60})', re.I)),
+    ("TikTok",     re.compile(r'tiktok\.com/@([A-Za-z0-9_.]{2,30})', re.I)),
+    ("LinkedIn",   re.compile(r'linkedin\.com/(?:in|company)/([A-Za-z0-9_\-]{1,60})', re.I)),
+    ("Telegram",   re.compile(r't(?:elegram)?\.me/([A-Za-z0-9_]{3,32})', re.I)),
+    ("Zalo",       re.compile(r'zalo\.me/([A-Za-z0-9_\-]{3,30})', re.I)),
+]
+
+# Vietnamese & global brand names for impersonation detection
+_BRAND_RE = re.compile(
+    r'\b(vietcombank|agribank|bidv|techcombank|vpbank|mbbank|sacombank|acb|tpbank|'
+    r'momo|zalopay|vnpay|shopeepay|viettel|mobifone|vinaphone|shopee|lazada|tiki|sendo|'
+    r'facebook|google|apple|tiktok|youtube|zalo|vnptwallet)\b',
+    re.IGNORECASE,
+)
+
 def _extract_og(html: str) -> dict:
     """Extract Open Graph + al:* app-link meta tags from HTML."""
     tags = {}
@@ -161,7 +180,8 @@ def _try_graph_api(result: dict, identifier: str):
                 "fields": (
                     "name,category,description,about,fan_count,followers_count,"
                     "website,phone,location,is_verified,cover,picture,general_info,"
-                    "link,verification_status,founded,single_line_address,emails"
+                    "link,verification_status,founded,single_line_address,emails,"
+                    "instagram_business_account,rating_count,overall_star_rating"
                 )
             },
             headers=HEADERS,
@@ -201,6 +221,15 @@ def _try_graph_api(result: dict, identifier: str):
                 emails = d.get("emails", [])
                 if emails:
                     result.setdefault("email", emails[0] if isinstance(emails, list) else emails)
+                # Linked Instagram Business account (pages only)
+                ig = d.get("instagram_business_account")
+                if isinstance(ig, dict) and ig.get("id"):
+                    result.setdefault("instagram_business_id", str(ig["id"]))
+                # Page rating (trust/reputation signal for business pages)
+                if d.get("rating_count") is not None:
+                    result.setdefault("rating_count", int(d["rating_count"]))
+                if d.get("overall_star_rating") is not None:
+                    result.setdefault("overall_star_rating", round(float(d["overall_star_rating"]), 1))
                 if d.get("name"):
                     result["exists"] = True
                     result["is_public"] = True
@@ -506,9 +535,503 @@ def _try_facebook_scraper3_search_posts(identifier: str, api_key: str, result: d
         pass
 
 
+# ─── Facebook analysis helpers ───────────────────────────────────────────────
+
+def _extract_linked_socials(result: dict) -> list:
+    """
+    Scan all text fields for linked social media handles.
+    Returns a list of {platform, handle} dicts for cross-platform investigation.
+    """
+    search_text = " ".join(filter(None, [
+        result.get("website") or "",
+        result.get("description") or "",
+        result.get("general_info") or "",
+        result.get("mission") or "",
+        result.get("profile_url") or "",
+    ]))
+    found = []
+    seen: set = set()
+    for platform, pat in _SOCIAL_LINK_PATTERNS:
+        m = pat.search(search_text)
+        if m:
+            handle = m.group(1).rstrip("/")
+            key = f"{platform}:{handle.lower()}"
+            if key not in seen:
+                seen.add(key)
+                found.append({"platform": platform, "handle": handle})
+    return found
+
+
+def _analyze_post_patterns(posts: list) -> dict | None:
+    """
+    Analyse post date strings from recent_posts to estimate posting frequency.
+    Returns None if fewer than 2 dated posts are available.
+    High frequency (>15/day) is flagged as a potential automation indicator.
+    """
+    if len(posts) < 2:
+        return None
+    dates = []
+    for p in posts:
+        d = p.get("date")
+        if d:
+            try:
+                dates.append(datetime.strptime(d, "%Y-%m-%d"))
+            except ValueError:
+                pass
+    if len(dates) < 2:
+        return None
+    dates.sort()
+    date_range_days = max((dates[-1] - dates[0]).days, 1)
+    posts_per_day = round(len(dates) / date_range_days, 2)
+    return {
+        "posts_scanned": len(dates),
+        "oldest_date": dates[0].strftime("%Y-%m-%d"),
+        "newest_date": dates[-1].strftime("%Y-%m-%d"),
+        "posts_per_day_est": posts_per_day,
+    }
+
+
+def _calculate_engagement_metrics(result: dict):
+    """
+    Compute engagement_rate (avg reactions+comments+shares per post / followers * 100)
+    and like_follower_ratio (page-likes ÷ current followers).
+    Appends anomaly notes to result["security_notes"] when thresholds are breached.
+
+    Typical healthy engagement rate benchmarks:
+      - >10 % : exceptionally high (verify authenticity)
+      - 3–10 % : strong organic engagement
+      - 1–3 %  : industry average
+      - 0.1–1 %: below average
+      - <0.1 % : very low — possible bot/purchased audience
+    """
+    # Resolve follower count (prefer follower_count, fall back to likes_count)
+    followers = None
+    for fc in (result.get("follower_count"), result.get("likes_count")):
+        if fc and str(fc).isdigit():
+            v = int(fc)
+            if v > 0:
+                followers = v
+                break
+
+    # Engagement rate from recent posts
+    posts = result.get("recent_posts") or []
+    if posts and followers:
+        total_eng = sum(
+            (p.get("reactions") or 0) + (p.get("comments") or 0) + (p.get("shares") or 0)
+            for p in posts
+        )
+        avg_per_post = total_eng / len(posts)
+        er = round(avg_per_post / followers * 100, 3)
+        result["engagement_rate"] = er
+        if er < 0.05 and followers > 10_000:
+            result["security_notes"].append(
+                f"⚠ Extremely low engagement rate ({er:.3f}%) despite {followers:,} followers — "
+                "strong indicator of purchased/bot-inflated follower count."
+            )
+        elif er > 20.0:
+            result["security_notes"].append(
+                f"⚠ Unusually high engagement rate ({er:.1f}%) — may indicate coordinated brigading "
+                "or engagement-pod manipulation of reach."
+            )
+
+    # Like / follower ratio (old bought-like detection for pages)
+    likes = result.get("likes_count")
+    if likes and followers and str(likes).isdigit():
+        ratio = round(int(likes) / followers, 3)
+        result["like_follower_ratio"] = ratio
+        if ratio > 5.0:
+            result["security_notes"].append(
+                f"⚠ Page-likes to followers ratio is very high ({ratio:.1f}×) — "
+                "possible old bought-like campaign (tactic common before 2020)."
+            )
+
+    # Talking-about / follower ratio (page health)
+    talking = result.get("talking_about")
+    if talking and str(talking).isdigit() and followers and followers > 50_000:
+        ta_ratio = int(talking) / followers * 100
+        if ta_ratio < 0.01:
+            result["security_notes"].append(
+                f"ℹ Very low 'talking about this' ratio ({ta_ratio:.4f}%) — "
+                "audience appears inactive; page may rely on paid reach rather than organic engagement."
+            )
+
+
 # ─── Facebook ────────────────────────────────────────────────────────────────
 
-def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
+# ── Breach intelligence helpers (auto-enrich when email/phone is discovered) ──
+
+def _try_intelx_phonebook(query: str, api_key: str) -> dict | None:
+    """
+    IntelligenceX Phonebook Search — discovers leaked email addresses, domains,
+    and phone numbers associated with the query term (email/username).
+    Free tier: ~10 req/day. Obtain a key at https://intelx.io/
+    API: POST https://2.intelx.io/phonebook/search  →  GET /phonebook/search/result?id=...
+    """
+    try:
+        r = requests.post(
+            "https://2.intelx.io/phonebook/search",
+            headers={"x-key": api_key, "Content-Type": "application/json"},
+            json={"term": query, "maxresults": 30, "media": 0, "target": 0, "timeout": 10},
+            timeout=12,
+            verify=True,
+        )
+        if r.status_code != 200:
+            return None
+        search_id = r.json().get("id")
+        if not search_id:
+            return None
+        time.sleep(1.5)
+        r2 = requests.get(
+            "https://2.intelx.io/phonebook/search/result",
+            headers={"x-key": api_key},
+            params={"id": search_id, "limit": 30, "offset": 0},
+            timeout=12,
+            verify=True,
+        )
+        if r2.status_code != 200:
+            return None
+        selectors = r2.json().get("selectors", [])
+        if not selectors:
+            return None
+        emails, domains, phones = [], [], []
+        for item in selectors:
+            value = item.get("selectorvalue", "")
+            stype = item.get("selectortype", 0)
+            if stype == 1 and value not in emails:
+                emails.append(value)
+            elif stype == 2 and value not in domains:
+                domains.append(value)
+            elif stype == 4 and value not in phones:
+                phones.append(value)
+        return {
+            "emails": emails[:15],
+            "domains": domains[:10],
+            "phones": phones[:10],
+            "total": len(selectors),
+        }
+    except Exception:
+        return None
+
+
+def _enrich_breach_intel(
+    result: dict,
+    breachdir_key: str | None = None,
+    hibp_key: str | None = None,
+    intelx_key: str | None = None,
+    dehashed_email: str | None = None,
+    dehashed_key: str | None = None,
+    snusbase_key: str | None = None,
+    emailrep_key: str | None = None,
+    hunter_key: str | None = None,
+):
+    """
+    Auto-enrich Facebook recon with breach intelligence.
+    Checks discovered email and phone against known breach databases.
+    Populates result["breach_intel"] only when actionable contact data is available.
+
+    Sources used:
+      1. LeakCheck.io public — free, no key, checks email & phone
+      2. BreachDirectory (RapidAPI) — free 100 req/month, reveals exact field types
+      3. HaveIBeenPwned v3 — optional paid ($3.95/mo), most comprehensive breach list
+      4. IntelligenceX Phonebook — optional free tier, discovers associated leaked identifiers
+      5. Dehashed — actual breach records with passwords/names/addresses/phones ($5/mo)
+      6. Snusbase — actual breach records ($2/mo)
+      7. Holehe — check which 100+ websites the email is registered on (free)
+      8. EmailRep.io — email reputation & breach signals (free 1000/day)
+      9. Hunter.io — person enrichment: name, job, phone, social profiles (free 25/mo)
+    """
+    from modules.breach_check import (
+        check_leakcheck_public,
+        check_breachdirectory,
+        check_hibp_email,
+        check_dehashed,
+        check_snusbase,
+        check_holehe,
+        check_emailrep,
+        check_hunter_email,
+        calculate_breach_severity,
+    )
+
+    email = result.get("email")
+    phone = result.get("phone")
+    if not email and not phone:
+        return
+
+    intel: dict = {
+        "email": email,
+        "phone": phone,
+        "leakcheck_email": None,
+        "leakcheck_phone": None,
+        "breachdirectory": None,
+        "hibp": None,
+        "intelx": None,
+        "dehashed": None,
+        "snusbase": None,
+        "holehe": None,
+        "emailrep": None,
+        "hunter": None,
+        "data_classes_exposed": [],
+        "leaked_hashes": [],
+        "associated_names": [],
+        "associated_phones": [],
+        "associated_addresses": [],
+        "associated_ips": [],
+        "registered_sites": [],
+        "risk_level": None,
+        "risk_score": 0,
+        "risk_color": "dim",
+        "total_breach_sources": 0,
+        "alerts": [],
+    }
+
+    associated_names: set = set()
+    associated_phones: set = set()
+    associated_addresses: set = set()
+    associated_ips: set = set()
+    leaked_hashes: list = []
+
+    email_valid = bool(email and re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email))
+    phone_clean = None
+    if phone:
+        phone_clean = re.sub(r'[\s\-\(\)\.\+]', '', phone)
+        if re.match(r'^\d{7,15}$', phone_clean):
+            # Preserve leading '+' for international format LeakCheck expects
+            phone_clean = re.sub(r'[\s\-\(\)\.]', '', phone)
+        else:
+            phone_clean = None
+
+    # ── 1. LeakCheck.io (email) — free, always run ────────────────────────
+    if email_valid:
+        lc_e = check_leakcheck_public(email)
+        intel["leakcheck_email"] = lc_e
+        if lc_e.get("found"):
+            n = len(lc_e.get("sources", []))
+            intel["total_breach_sources"] += n
+            intel["alerts"].append(
+                f"Email '{email}' xuất hiện trong {n} nguồn rò rỉ dữ liệu (LeakCheck)."
+            )
+
+    # ── 2. BreachDirectory — reveals exact data field types leaked ────────
+    if email_valid and breachdir_key:
+        bd = check_breachdirectory(email, breachdir_key)
+        intel["breachdirectory"] = bd
+        if bd.get("found"):
+            for entry in bd.get("result", []):
+                for field in entry.get("fields", []):
+                    if field not in intel["data_classes_exposed"]:
+                        intel["data_classes_exposed"].append(field)
+            size = bd.get("size") or len(bd.get("result", []))
+            intel["total_breach_sources"] += size
+            exposed_str = ", ".join(intel["data_classes_exposed"][:8])
+            intel["alerts"].append(
+                f"BreachDirectory: {size} bản ghi — trường dữ liệu bị lộ: {exposed_str}."
+            )
+            # Raise specific high-value alerts
+            cl = {f.lower() for f in intel["data_classes_exposed"]}
+            if any(k in cl for k in ("password", "hash", "md5", "sha1")):
+                intel["alerts"].append(
+                    "⚠ CRITICAL: Hash/mật khẩu của tài khoản này đã bị lộ trong breach database!"
+                )
+            if any(k in cl for k in ("address", "street", "physical address")):
+                intel["alerts"].append(
+                    "⚠ Địa chỉ thực (physical address) có thể đã bị lộ trong breach."
+                )
+            if "phone" in cl or "phone number" in cl:
+                intel["alerts"].append(
+                    "⚠ Số điện thoại liên kết với email này đã bị lộ trong breach."
+                )
+            if any(k in cl for k in ("credit card", "bank", "financial")):
+                intel["alerts"].append(
+                    "⚠ CRITICAL: Thông tin tài chính / thẻ ngân hàng có thể đã bị lộ!"
+                )
+
+    # ── 3. HIBP (optional, paid key) ─────────────────────────────────────
+    if email_valid and hibp_key:
+        hibp_r = check_hibp_email(email, hibp_key)
+        intel["hibp"] = hibp_r
+        for breach in hibp_r.get("breaches", []):
+            for dc in breach.get("data_classes", []):
+                if dc not in intel["data_classes_exposed"]:
+                    intel["data_classes_exposed"].append(dc)
+        n_b = len(hibp_r.get("breaches", []))
+        n_p = len(hibp_r.get("pastes", []))
+        if n_b or n_p:
+            intel["total_breach_sources"] += n_b
+            intel["alerts"].append(
+                f"HIBP: email xuất hiện trong {n_b} breach và {n_p} paste(s)."
+            )
+
+    # ── 4. LeakCheck.io (phone) — free, always run ────────────────────────
+    if phone_clean:
+        lc_p = check_leakcheck_public(phone_clean)
+        intel["leakcheck_phone"] = lc_p
+        if lc_p.get("found"):
+            n = len(lc_p.get("sources", []))
+            intel["total_breach_sources"] += n
+            intel["alerts"].append(
+                f"Số điện thoại '{phone_clean}' xuất hiện trong {n} nguồn rò rỉ (LeakCheck)."
+            )
+
+    # ── 5. IntelligenceX Phonebook (optional, free tier key) ─────────────
+    if intelx_key and email_valid:
+        ix = _try_intelx_phonebook(email, intelx_key)
+        if ix and ix.get("total", 0) > 0:
+            intel["intelx"] = ix
+            intel["alerts"].append(
+                f"IntelligenceX: {ix['total']} selector(s) liên quan — "
+                f"{len(ix.get('emails', []))} email, "
+                f"{len(ix.get('domains', []))} domain, "
+                f"{len(ix.get('phones', []))} phone số."
+            )
+
+    # ── 6. Dehashed — actual breach records ──────────────────────────────
+    if dehashed_email and dehashed_key:
+        q_type = "email" if email_valid else ("phone" if phone_clean else "username")
+        q_value = email if email_valid else (phone_clean or "")
+        if q_value:
+            dh = check_dehashed(q_value, q_type, dehashed_email, dehashed_key)
+            intel["dehashed"] = dh
+            entries = dh.get("entries") or []
+            if dh.get("found") and entries:
+                intel["total_breach_sources"] += dh.get("total", len(entries))
+                intel["alerts"].append(
+                    f"Dehashed: {dh.get('total', len(entries))} bản ghi thực tế tìm thấy!"
+                )
+                for entry in entries[:50]:
+                    n = (entry.get("name") or "").strip()
+                    p = (entry.get("phone") or "").strip()
+                    a = (entry.get("address") or "").strip()
+                    ip = (entry.get("ip_address") or "").strip()
+                    pw = entry.get("password") or ""
+                    hp = entry.get("hashed_password") or ""
+                    db = entry.get("database_name") or "?"
+                    if n:
+                        associated_names.add(n)
+                    if p and p not in (phone or ""):
+                        associated_phones.add(p)
+                    if a:
+                        associated_addresses.add(a)
+                    if ip:
+                        associated_ips.add(ip)
+                    if pw or hp:
+                        leaked_hashes.append({"source": db, "password": pw, "hash": hp, "hash_type": ""})
+                    # Alert if plaintext password found
+                    if pw:
+                        intel["alerts"].append(
+                            f"⚠ CRITICAL: Tìm thấy mật khẩu plaintext trong Dehashed ({db})!"
+                        )
+                        break  # only one critical alert per source
+
+    # ── 7. Snusbase — actual breach records ──────────────────────────────
+    if snusbase_key:
+        q_type = "email" if email_valid else ("phone" if phone_clean else "username")
+        q_value = email if email_valid else (phone_clean or "")
+        if q_value:
+            sn = check_snusbase(q_value, q_type, snusbase_key)
+            intel["snusbase"] = sn
+            entries = sn.get("entries") or []
+            if sn.get("found") and entries:
+                intel["total_breach_sources"] += sn.get("total", len(entries))
+                intel["alerts"].append(
+                    f"Snusbase: {sn.get('total', len(entries))} bản ghi thực tế tìm thấy!"
+                )
+                for entry in entries[:50]:
+                    n = (entry.get("name") or "").strip()
+                    p_val = (entry.get("ip") or "").strip()
+                    pw = entry.get("password") or ""
+                    h = entry.get("hash") or ""
+                    ht = entry.get("hash_type") or ""
+                    tbl = entry.get("table") or "?"
+                    if n:
+                        associated_names.add(n)
+                    if p_val:
+                        associated_ips.add(p_val)
+                    if pw or h:
+                        leaked_hashes.append({"source": tbl, "password": pw, "hash": h, "hash_type": ht})
+                    if pw:
+                        intel["alerts"].append(
+                            f"⚠ CRITICAL: Tìm thấy mật khẩu plaintext trong Snusbase ({tbl})!"
+                        )
+                        break
+
+    # ── 8. Holehe — email registration on 100+ sites ──────────────────────
+    if email_valid:
+        ho = check_holehe(email)
+        intel["holehe"] = ho
+        sites = ho.get("registered_sites") or []
+        if sites:
+            intel["registered_sites"] = sites
+            intel["alerts"].append(
+                f"Holehe: email được đăng ký trên {len(sites)} dịch vụ — "
+                + ", ".join(s.get("name", "") for s in sites[:5])
+                + (" ..." if len(sites) > 5 else "")
+            )
+
+    # ── 9. EmailRep — reputation signals ─────────────────────────────────
+    if email_valid:
+        er = check_emailrep(email, emailrep_key)
+        intel["emailrep"] = er
+        if er.get("suspicious") or er.get("credentials_leaked"):
+            flags = []
+            if er.get("credentials_leaked"): flags.append("credentials_leaked")
+            if er.get("blacklisted"):         flags.append("blacklisted")
+            if er.get("malicious_activity"): flags.append("malicious_activity")
+            if flags:
+                intel["alerts"].append(
+                    f"EmailRep: {', '.join(flags)} — reputation: {er.get('reputation', '?')}"
+                )
+
+    # ── 10. Hunter.io — person enrichment ────────────────────────────────
+    if email_valid and hunter_key:
+        hu = check_hunter_email(email, hunter_key)
+        intel["hunter"] = hu
+        if hu.get("found"):
+            name_parts = " ".join(filter(None, [hu.get("first_name"), hu.get("last_name")]))
+            if name_parts:
+                associated_names.add(name_parts)
+                intel["alerts"].append(
+                    f"Hunter.io: tìm thấy tên thật '{name_parts}'"
+                    + (f", công ty: {hu['organization']}" if hu.get("organization") else "")
+                )
+            if hu.get("phone_number"):
+                associated_phones.add(hu["phone_number"])
+
+    # Aggregate extracted values into intel dict
+    intel["leaked_hashes"] = leaked_hashes[:30]
+    intel["associated_names"] = sorted(associated_names)[:20]
+    intel["associated_phones"] = sorted(associated_phones)[:20]
+    intel["associated_addresses"] = sorted(associated_addresses)[:20]
+    intel["associated_ips"] = sorted(associated_ips)[:20]
+
+    # ── Risk assessment ───────────────────────────────────────────────────
+    if intel["data_classes_exposed"]:
+        sev = calculate_breach_severity(intel["data_classes_exposed"])
+        intel["risk_level"] = sev["risk_level"]
+        intel["risk_score"] = sev["score"]
+        intel["risk_color"] = sev["color"]
+    elif intel["total_breach_sources"] > 0:
+        intel["risk_level"] = "MEDIUM"
+        intel["risk_score"] = 35
+        intel["risk_color"] = "yellow"
+    elif email_valid or phone_clean:
+        intel["risk_level"] = "NOT FOUND"
+        intel["risk_score"] = 0
+        intel["risk_color"] = "green"
+
+    result["breach_intel"] = intel
+
+def facebook_recon(
+    identifier: str,
+    fb_scraper_key: str | None = None,
+    hibp_key: str | None = None,
+    breachdir_key: str | None = None,
+    intelx_key: str | None = None,
+    dehashed_email: str | None = None,
+    dehashed_key: str | None = None,
+    snusbase_key: str | None = None,
+    emailrep_key: str | None = None,
+    hunter_key: str | None = None,
+) -> dict:
     """
     Gather public OSINT from a Facebook profile, page, or numeric ID.
 
@@ -557,6 +1080,16 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
         "data_sources": [],
         "security_notes": [],
         "dorks": [],
+        # ── Derived / enriched fields ──────────────────────────────────────
+        "linked_accounts": [],        # cross-platform handles found in profile text
+        "engagement_rate": None,      # avg post engagement / followers × 100 (%)
+        "like_follower_ratio": None,  # page-likes ÷ followers (bought-like detector)
+        "post_pattern": None,         # {posts_per_day_est, oldest_date, newest_date}
+        "ad_library_url": None,       # direct link to Facebook Ad Library transparency page
+        "rating_count": None,         # number of public star ratings (business pages)
+        "overall_star_rating": None,  # average star rating 1–5 (business pages)
+        "instagram_business_id": None,# linked Instagram Business account ID
+        "breach_intel": None,          # auto-enriched breach/leak intelligence (email+phone)
     }
 
     # ── Fetch using facebookexternalhit/1.1 UA ─────────────────────────────
@@ -659,6 +1192,28 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
         time.sleep(SCRAPER3_DELAY)
         _try_facebook_scraper3_search_posts(identifier, fb_scraper_key, result)
 
+    # ── Cross-platform linked accounts ────────────────────────────────────
+    result["linked_accounts"] = _extract_linked_socials(result)
+
+    # ── Post pattern analysis ─────────────────────────────────────────────
+    pattern = _analyze_post_patterns(result.get("recent_posts") or [])
+    if pattern:
+        result["post_pattern"] = pattern
+
+    # ── Engagement metrics (requires follower count + posts) ──────────────
+    if result["exists"]:
+        _calculate_engagement_metrics(result)
+
+    # ── Facebook Ad Library URL (public transparency tool) ────────────────
+    if result.get("numeric_id"):
+        result["ad_library_url"] = (
+            f"https://www.facebook.com/ads/library/?id={result['numeric_id']}&media_type=all"
+        )
+    else:
+        result["ad_library_url"] = (
+            f"https://www.facebook.com/ads/library/?q={quote(identifier)}&search_type=page"
+        )
+
     # ── Infer account type ─────────────────────────────────────────────────
     if not result.get("account_type"):
         if result.get("category"):
@@ -717,6 +1272,58 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
                 "Username contains a well-known brand name but is NOT verified — possible impersonation account."
             )
 
+        # ── Cover photo: business pages without a cover are suspicious ─────
+        if not result.get("cover_photo") and result.get("account_type") in (
+            "Page / Business", "Page / Business / Public Figure",
+        ):
+            result["security_notes"].append(
+                "ℹ No cover photo detected for a business/page account — uncommon for legitimate brands."
+            )
+
+        # ── Star rating signal (business pages) ───────────────────────────
+        if result.get("overall_star_rating") and result.get("rating_count"):
+            star = result["overall_star_rating"]
+            cnt  = result["rating_count"]
+            if star < 2.0 and cnt > 50:
+                result["security_notes"].append(
+                    f"⚠ Very low public rating ({star}/5 from {cnt:,} reviews) — "
+                    "may indicate fraudulent activity, poor service, or scam complaints."
+                )
+            elif star >= 4.5 and cnt < 20:
+                result["security_notes"].append(
+                    f"ℹ High rating ({star}/5) but only {cnt} reviews — "
+                    "too few reviews to establish credibility; may be manipulated."
+                )
+
+        # ── Linked Instagram Business account ─────────────────────────────
+        if result.get("instagram_business_id"):
+            result["security_notes"].append(
+                f"ℹ Linked Instagram Business account detected (ID: {result['instagram_business_id']}) — "
+                "investigate the linked IG profile for additional context."
+            )
+
+        # ── Cross-platform linked accounts ────────────────────────────────
+        for acct in result.get("linked_accounts") or []:
+            result["security_notes"].append(
+                f"ℹ Linked {acct['platform']} account found: @{acct['handle']} — "
+                "expand cross-platform investigation."
+            )
+
+        # ── Post frequency anomaly ────────────────────────────────────────
+        pat = result.get("post_pattern")
+        if pat and pat.get("posts_per_day_est", 0) > 15:
+            result["security_notes"].append(
+                f"⚠ Very high posting frequency (~{pat['posts_per_day_est']} posts/day) — "
+                "consistent with automated or bot-managed content distribution."
+            )
+
+        # ── Brand impersonation (Vietnamese & global brands) ─────────────
+        if _BRAND_RE.search(identifier) and not result.get("is_verified"):
+            result["security_notes"].append(
+                "⚠ Username/vanity URL contains a known brand name but is NOT verified — "
+                "high risk of impersonation or phishing targeting users of that brand."
+            )
+
     elif not result.get("security_notes"):
         result["security_notes"].append(
             "Profile could not be fetched — account may be private, suspended, or the identifier is incorrect."
@@ -748,15 +1355,6 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
             "url": f'https://www.google.com/search?q=%22{enc_q}%22+breach+OR+leak+OR+pastebin',
         },
         {
-            "label": "Reverse image search profile pic",
-            "query": "Find accounts sharing the same profile picture",
-            "url": (
-                f"https://www.google.com/searchbyimage?image_url={quote(result['profile_pic'])}"
-                if result.get("profile_pic")
-                else "https://images.google.com/"
-            ),
-        },
-        {
             "label": "LinkedIn identity match",
             "query": f'site:linkedin.com "{q}"',
             "url": f'https://www.google.com/search?q=site%3Alinkedin.com+%22{enc_q}%22',
@@ -771,7 +1369,71 @@ def facebook_recon(identifier: str, fb_scraper_key: str | None = None) -> dict:
             "query": f"Wayback Machine snapshots of this Facebook profile",
             "url": f"https://web.archive.org/web/*/{profile_url}",
         },
+        {
+            "label": "Facebook Ad Library — ads run by this page",
+            "query": "Ad transparency: active/paused ads, spend range, reach regions",
+            "url": result["ad_library_url"],
+        },
+        {
+            "label": "Archive.today cached snapshot",
+            "query": "archive.today / archive.ph cached version of this profile",
+            "url": f"https://archive.ph/{quote(profile_url)}",
+        },
+        {
+            "label": "Telegram & Pastebin mentions",
+            "query": f'"{q}" site:t.me OR site:pastebin.com OR site:paste.ee',
+            "url": f'https://www.google.com/search?q=%22{enc_q}%22+site%3At.me+OR+site%3Apastebin.com',
+        },
+        {
+            "label": "Google Image Search — profile picture",
+            "query": "Find other accounts reusing the same profile picture",
+            "url": (
+                f"https://lens.google.com/uploadbyurl?url={quote(result['profile_pic'])}"
+                if result.get("profile_pic")
+                else "https://lens.google.com/"
+            ),
+        },
     ]
+    # ── Conditional dorks based on discovered contact data ─────────────────
+    if result.get("email"):
+        enc_email = quote(result["email"])
+        result["dorks"].append({
+            "label": "Email breach check — Have I Been Pwned",
+            "query": f"Check if {result['email']} appeared in known data breaches",
+            "url": f"https://haveibeenpwned.com/account/{enc_email}",
+        })
+    if result.get("phone"):
+        enc_phone = quote(re.sub(r'\s+', '', result["phone"]))
+        result["dorks"].append({
+            "label": "Phone number cross-reference",
+            "query": f'"{result["phone"]}" owner OR registration OR contact',
+            "url": f'https://www.google.com/search?q=%22{enc_phone}%22+owner+OR+contact+OR+registration',
+        })
+    if result.get("website"):
+        enc_site = quote(result["website"])
+        result["dorks"].append({
+            "label": "Website WHOIS / hosting lookup",
+            "query": f"WHOIS and hosting info for {result['website']}",
+            "url": f"https://www.whois.com/whois/{enc_site}",
+        })
+
+    # ── Breach intelligence enrichment ────────────────────────────────────
+    # Runs automatically when email or phone was discovered in the profile.
+    # Uses LeakCheck (free), BreachDirectory (keyed), HIBP (optional), IntelX (optional).
+    if result.get("email") or result.get("phone"):
+        console.print("[dim]  → Checking discovered contact data against breach databases...[/dim]")
+        _enrich_breach_intel(
+            result,
+            breachdir_key=breachdir_key,
+            hibp_key=hibp_key,
+            intelx_key=intelx_key,
+            dehashed_email=dehashed_email,
+            dehashed_key=dehashed_key,
+            snusbase_key=snusbase_key,
+            emailrep_key=emailrep_key,
+            hunter_key=hunter_key,
+        )
+
     return result
 
 
@@ -994,6 +1656,37 @@ def print_facebook_results(data: dict):
     if stats:
         console.print(f"  Stats        : {' | '.join(stats)}")
 
+    # Engagement rate
+    if data.get("engagement_rate") is not None:
+        er = data["engagement_rate"]
+        if er < 0.05 or er > 20.0:
+            er_color = "red"
+        elif er >= 1.0:
+            er_color = "green"
+        else:
+            er_color = "yellow"
+        ratio_str = (
+            f"  (likes/flwr ratio: {data['like_follower_ratio']:.2f}\u00d7)"
+            if data.get("like_follower_ratio") else ""
+        )
+        console.print(f"  Engagement   : [{er_color}]{er:.3f}% engagement rate[/{er_color}]{ratio_str}")
+
+    # Post frequency
+    pat = data.get("post_pattern")
+    if pat:
+        freq = pat.get("posts_per_day_est", 0)
+        fc = "red" if freq > 15 else ("green" if freq >= 0.1 else "yellow")
+        console.print(
+            f"  Post Freq    : [{fc}]~{freq} posts/day[/{fc}]"
+            f"  (sampled {pat['posts_scanned']} posts,"
+            f" {pat['oldest_date']} \u2192 {pat['newest_date']})"
+        )
+
+    # Star rating (business pages)
+    if data.get("overall_star_rating") and data.get("rating_count"):
+        stars = "\u2605" * int(round(data["overall_star_rating"])) + "\u2606" * (5 - int(round(data["overall_star_rating"])))
+        console.print(f"  Rating       : {data['overall_star_rating']}/5  {stars}  ({data['rating_count']:,} reviews)")
+
     # Identity fields
     if data.get("location"):
         console.print(f"  Location     : {data['location']}")
@@ -1007,6 +1700,8 @@ def print_facebook_results(data: dict):
         console.print(f"  Phone        : {data['phone']}")
     if data.get("founded"):
         console.print(f"  Founded      : {data['founded']}")
+    if data.get("ad_library_url"):
+        console.print(f"  Ad Library   : [link={data['ad_library_url']}][cyan]View Ad Transparency \u2197[/cyan][/link]")
 
     if data.get("description"):
         desc = data["description"][:200] + ("..." if len(data.get("description","")) > 200 else "")
@@ -1020,7 +1715,14 @@ def print_facebook_results(data: dict):
     if data.get("profile_pic"):
         console.print(f"  Profile Pic  : [link={data['profile_pic']}][cyan]View image ↗[/cyan][/link]")
     if data.get("cover_photo"):
-        console.print(f"  Cover Photo  : [link={data['cover_photo']}][cyan]View image ↗[/cyan][/link]")
+        console.print(f"  Cover Photo  : [link={data['cover_photo']}][cyan]View image \u2197[/cyan][/link]")
+
+    # Linked social accounts
+    linked = data.get("linked_accounts") or []
+    if linked:
+        console.print(f"\n  [bold]Linked Social Accounts:[/bold]")
+        for acct in linked:
+            console.print(f"    [cyan]{acct['platform']}[/cyan]: @{acct['handle']}")
 
     # Recent posts table
     posts = data.get("recent_posts") or []
@@ -1053,6 +1755,244 @@ def print_facebook_results(data: dict):
         console.print("\n  [bold yellow]⚠ Security Observations:[/bold yellow]")
         for note in data["security_notes"]:
             console.print(f"    [yellow]• {note}[/yellow]")
+
+    # ── Breach Intelligence section ───────────────────────────────────────
+    bi = data.get("breach_intel")
+    if bi:
+        from rich.table import Table as _Table
+        risk_color = bi.get("risk_color") or "dim"
+        risk_level = bi.get("risk_level") or "UNKNOWN"
+        score = bi.get("risk_score", 0)
+        total = bi.get("total_breach_sources", 0)
+        console.print(f"\n  [bold red]═ Breach / Leak Intelligence ═[/bold red]")
+        if bi.get("email"):
+            console.print(f"  Email checked : [cyan]{bi['email']}[/cyan]")
+        if bi.get("phone"):
+            console.print(f"  Phone checked : [cyan]{bi['phone']}[/cyan]")
+        console.print(
+            f"  Risk Level    : [{risk_color}]{risk_level}[/{risk_color}]"
+            f"  (score: {score}/100, ~{total} breach source(s))"
+        )
+
+        # Alerts
+        for alert in bi.get("alerts") or []:
+            color = "bold red" if "CRITICAL" in alert or "⚠" in alert else "yellow"
+            console.print(f"    [{color}]• {alert}[/{color}]")
+
+        # Data classes exposed (BreachDirectory / HIBP)
+        dc = bi.get("data_classes_exposed") or []
+        if dc:
+            console.print(f"  Data Exposed  : [red]{', '.join(dc)}[/red]")
+
+        # LeakCheck email sources table
+        lc_e = bi.get("leakcheck_email") or {}
+        if lc_e.get("found") and lc_e.get("sources"):
+            srcs = lc_e["sources"]
+            console.print(f"\n  [bold]LeakCheck.io — Email sources ({len(srcs)}):[/bold]")
+            t = _Table(show_header=False, box=None, padding=(0, 2))
+            t.add_column("📁", style="dim")
+            for s in srcs[:12]:
+                t.add_row(str(s))
+            console.print(t)
+            if len(srcs) > 12:
+                console.print(f"    [dim]... và {len(srcs) - 12} nguồn khác[/dim]")
+
+        # LeakCheck phone sources
+        lc_p = bi.get("leakcheck_phone") or {}
+        if lc_p.get("found") and lc_p.get("sources"):
+            srcs_p = lc_p["sources"]
+            console.print(f"\n  [bold]LeakCheck.io — Phone sources ({len(srcs_p)}):[/bold]")
+            t2 = _Table(show_header=False, box=None, padding=(0, 2))
+            t2.add_column("📱", style="dim")
+            for s in srcs_p[:10]:
+                t2.add_row(str(s))
+            console.print(t2)
+
+        # BreachDirectory detailed records
+        bd = bi.get("breachdirectory") or {}
+        if bd.get("found") and bd.get("result"):
+            records = bd["result"]
+            size = bd.get("size") or len(records)
+            console.print(f"\n  [bold]BreachDirectory — {size} bản ghi:[/bold]")
+            bt = _Table(show_header=True, header_style="bold red", box=None, padding=(0, 2))
+            bt.add_column("Nguồn", style="dim", min_width=18)
+            bt.add_column("Trường dữ liệu bị lộ")
+            bt.add_column("Hash type", style="dim", width=10)
+            for entry in records[:15]:
+                raw_src = entry.get("sources", [])
+                src = raw_src[0] if isinstance(raw_src, list) and raw_src else str(raw_src or "?")
+                fields = ", ".join(entry.get("fields", [])) or "—"
+                h_type = entry.get("password_type", "—") or "—"
+                bt.add_row(src, fields, h_type)
+            console.print(bt)
+            if size > 15:
+                console.print(f"    [dim]... và {size - 15} bản ghi khác[/dim]")
+
+        # HIBP breaches table
+        hibp = bi.get("hibp") or {}
+        if hibp.get("breaches"):
+            breaches = hibp["breaches"]
+            console.print(f"\n  [bold]HaveIBeenPwned — {len(breaches)} breach(es):[/bold]")
+            ht = _Table(show_header=True, header_style="bold red", box=None, padding=(0, 2))
+            ht.add_column("Breach", min_width=16)
+            ht.add_column("Date", style="dim", width=11)
+            ht.add_column("Records", justify="right", width=10)
+            ht.add_column("Data Exposed")
+            for b in breaches[:10]:
+                cnt = f"{b.get('pwn_count', 0):,}" if b.get("pwn_count") else "?"
+                dcs = ", ".join(b.get("data_classes", [])[:5])
+                ht.add_row(b.get("name") or "?", b.get("date") or "?", cnt, dcs)
+            console.print(ht)
+
+        # IntelligenceX results
+        ix = bi.get("intelx") or {}
+        if ix and ix.get("total", 0) > 0:
+            console.print(f"\n  [bold]IntelligenceX Phonebook ({ix['total']} selectors):[/bold]")
+            if ix.get("emails"):
+                console.print(f"    Emails  : {', '.join(ix['emails'][:8])}")
+            if ix.get("phones"):
+                console.print(f"    Phones  : {', '.join(ix['phones'][:8])}")
+            if ix.get("domains"):
+                console.print(f"    Domains : {', '.join(ix['domains'][:6])}")
+
+        # Dehashed actual records
+        dh = bi.get("dehashed") or {}
+        dh_entries = dh.get("entries") or []
+        if dh.get("found") and dh_entries:
+            total_dh = dh.get("total", len(dh_entries))
+            console.print(f"\n  [bold red]Dehashed — {total_dh} bản ghi thực tế:[/bold red]")
+            dht = _Table(show_header=True, header_style="bold red", show_lines=True, padding=(0, 1))
+            dht.add_column("Database", min_width=16, style="dim")
+            dht.add_column("Email", min_width=20)
+            dht.add_column("Tên thật", min_width=14)
+            dht.add_column("Password / Hash", min_width=20)
+            dht.add_column("SĐT", min_width=12)
+            dht.add_column("IP", width=15)
+            for e in dh_entries[:15]:
+                pw = e.get("password") or ""
+                hp = e.get("hashed_password") or ""
+                pw_disp = pw if pw else (f"[dim]{hp[:24]}…[/dim]" if hp else "—")
+                dht.add_row(
+                    (e.get("database_name") or "?")[:20],
+                    (e.get("email") or "—")[:28],
+                    (e.get("name") or "—")[:16],
+                    pw_disp,
+                    (e.get("phone") or "—")[:14],
+                    (e.get("ip_address") or "—")[:15],
+                )
+            console.print(dht)
+            if total_dh > 15:
+                console.print(f"    [dim]... và {total_dh - 15} bản ghi khác[/dim]")
+        elif dh.get("note"):
+            console.print(f"\n  [dim]Dehashed: {dh['note']}[/dim]")
+
+        # Snusbase actual records
+        sn = bi.get("snusbase") or {}
+        sn_entries = sn.get("entries") or []
+        if sn.get("found") and sn_entries:
+            total_sn = sn.get("total", len(sn_entries))
+            console.print(f"\n  [bold red]Snusbase — {total_sn} bản ghi thực tế:[/bold red]")
+            snt = _Table(show_header=True, header_style="bold red", show_lines=True, padding=(0, 1))
+            snt.add_column("Database", min_width=16, style="dim")
+            snt.add_column("Email", min_width=22)
+            snt.add_column("Username", min_width=14)
+            snt.add_column("Password", min_width=18)
+            snt.add_column("Hash / type", min_width=16)
+            snt.add_column("IP", width=15)
+            for e in sn_entries[:15]:
+                h = e.get("hash") or ""
+                ht_val = e.get("hash_type") or ""
+                hash_disp = f"{h[:20]}… [{ht_val}]" if h else "—"
+                snt.add_row(
+                    (e.get("table") or "?")[:20],
+                    (e.get("email") or "—")[:28],
+                    (e.get("username") or "—")[:16],
+                    (e.get("password") or "—")[:20],
+                    hash_disp,
+                    (e.get("ip") or "—")[:15],
+                )
+            console.print(snt)
+            if total_sn > 15:
+                console.print(f"    [dim]... và {total_sn - 15} bản ghi khác[/dim]")
+        elif sn.get("note"):
+            console.print(f"\n  [dim]Snusbase: {sn['note']}[/dim]")
+
+        # Extracted leaked data summary
+        names = bi.get("associated_names") or []
+        phones = bi.get("associated_phones") or []
+        addrs = bi.get("associated_addresses") or []
+        ips = bi.get("associated_ips") or []
+        hashes = bi.get("leaked_hashes") or []
+        if any([names, phones, addrs, ips, hashes]):
+            console.print(f"\n  [bold yellow]Dữ liệu trích xuất từ breach records:[/bold yellow]")
+            if names:
+                console.print(f"    Tên thật tìm thấy : [bold]{', '.join(names[:8])}[/bold]")
+            if phones:
+                console.print(f"    Điện thoại liên kết: [red]{', '.join(phones[:8])}[/red]")
+            if addrs:
+                console.print(f"    Địa chỉ liên kết  : [red]{', '.join(addrs[:5])}[/red]")
+            if ips:
+                console.print(f"    IP liên kết       : [yellow]{', '.join(ips[:8])}[/yellow]")
+            if hashes:
+                pw_sources = list({h["source"] for h in hashes if h.get("password")})
+                hash_sources = list({h["source"] for h in hashes if h.get("hash")})
+                if pw_sources:
+                    console.print(f"    Plaintext pw leaks: [bold red]{', '.join(pw_sources[:5])}[/bold red]")
+                if hash_sources:
+                    console.print(f"    Hash pw leaks     : [red]{', '.join(hash_sources[:5])}[/red]")
+
+        # Holehe — registered sites
+        ho = bi.get("holehe") or {}
+        ho_sites = ho.get("registered_sites") or bi.get("registered_sites") or []
+        if ho_sites:
+            console.print(f"\n  [bold]Holehe — email đăng ký trên {len(ho_sites)} dịch vụ:[/bold]")
+            hot = _Table(show_header=False, box=None, padding=(0, 2))
+            hot.add_column("🌐", style="cyan", min_width=18)
+            hot.add_column("Domain", style="dim")
+            for s in ho_sites:
+                hot.add_row(s.get("name", "?"), s.get("domain", ""))
+            console.print(hot)
+        elif ho.get("note"):
+            console.print(f"\n  [dim]Holehe: {ho['note']}[/dim]")
+
+        # EmailRep signals
+        er = bi.get("emailrep") or {}
+        if er and not er.get("error"):
+            rep = er.get("reputation") or "unknown"
+            sus = er.get("suspicious")
+            rep_color = "red" if sus else ("yellow" if rep in ("low", "none") else "green")
+            console.print(f"\n  [bold]EmailRep.io:[/bold]  Reputation [{rep_color}]{rep}[/{rep_color}]  Suspicious: [{rep_color}]{sus}[/{rep_color}]  References: {er.get('references', 0)}")
+            er_flags = []
+            if er.get("blacklisted"):        er_flags.append("[bold red]Blacklisted[/bold red]")
+            if er.get("credentials_leaked"):  er_flags.append("[red]Credentials leaked[/red]")
+            if er.get("data_breach"):         er_flags.append("[red]Data breach[/red]")
+            if er.get("malicious_activity"):  er_flags.append("[red]Malicious activity[/red]")
+            if er_flags:
+                console.print("    Flags : " + "  ".join(er_flags))
+            if er.get("profiles"):
+                console.print(f"    Profiles: [cyan]{', '.join(er['profiles'][:8])}[/cyan]")
+
+        # Hunter.io person enrichment
+        hu = bi.get("hunter") or {}
+        if hu and hu.get("found") and not hu.get("error"):
+            name = " ".join(filter(None, [hu.get("first_name"), hu.get("last_name")])) or "?"
+            console.print(f"\n  [bold]Hunter.io enrichment:[/bold]  Tên: [bold]{name}[/bold]")
+            if hu.get("position"):     console.print(f"    Chức danh : {hu['position']}")
+            if hu.get("organization"): console.print(f"    Công ty   : {hu['organization']}")
+            if hu.get("phone_number"): console.print(f"    Điện thoại: [red]{hu['phone_number']}[/red]")
+            if hu.get("linkedin"):     console.print(f"    LinkedIn  : [cyan]{hu['linkedin']}[/cyan]")
+            if hu.get("twitter"):      console.print(f"    Twitter   : [cyan]@{hu['twitter']}[/cyan]")
+
+        # Manual search links for tools we can't auto-query
+        console.print("\n  [bold]Manual Breach Lookup Links:[/bold]")
+        if bi.get("email"):
+            enc = quote(bi["email"])
+            console.print(f"    Dehashed    : [link=https://www.dehashed.com/search?query={enc}][cyan]Search '{bi['email']}' ↗[/cyan][/link]")
+            console.print(f"    Snusbase    : [link=https://snusbase.com/][cyan]snusbase.com ↗[/cyan][/link]")
+            console.print(f"    IntelX      : [link=https://intelx.io/?s={enc}][cyan]intelx.io ↗[/cyan][/link]")
+        if bi.get("phone"):
+            enc_ph = quote(bi["phone"])
+            console.print(f"    Phone OSINT : [link=https://www.google.com/search?q=%22{enc_ph}%22+owner+OR+name+OR+address][cyan]Google ↗[/cyan][/link]")
 
     if data["dorks"]:
         console.print("\n  [bold]Investigation Dorks:[/bold]")

@@ -31,6 +31,7 @@ from modules.whois_lookup import (
     subdomain_enum, print_subdomains,
     check_email_security, print_email_security,
     test_zone_transfer, print_zone_transfer,
+    check_dns_security, print_dns_security,
 )
 from modules.email_recon import email_recon, print_email_results, validate_email
 from modules.username_search import username_search, print_username_results
@@ -196,6 +197,14 @@ def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip,
         all_data["zone_transfer"] = zt_data
         if out_fmt == "table":
             print_zone_transfer(zt_data)
+
+        # DNS Security Analysis (DNSSEC, CAA, DANE)
+        if out_fmt == "table":
+            console.print("[dim]Analyzing DNS security (DNSSEC, CAA, DANE)...[/dim]")
+        dns_sec_data = check_dns_security(target)
+        all_data["dns_security"] = dns_sec_data
+        if out_fmt == "table":
+            print_dns_security(dns_sec_data)
 
     if do_subdomain:
         if out_fmt == "table":
@@ -481,7 +490,14 @@ def cmd_breach(target, password, hibp_key, breachdir_key, report, output):
     from modules.breach_check import breach_check, print_breach_results
     print_banner()
     console.print(f"[dim]Đang kiểm tra '{target}' trong các nguồn rò rỉ dữ liệu...[/dim]")
-    data = breach_check(target, password=password, hibp_key=hibp_key, breachdir_key=breachdir_key)
+    data = breach_check(
+        target, password=password, hibp_key=hibp_key, breachdir_key=breachdir_key,
+        dehashed_email=os.getenv("DEHASHED_EMAIL"),
+        dehashed_key=os.getenv("DEHASHED_KEY"),
+        snusbase_key=os.getenv("SNUSBASE_KEY"),
+        emailrep_key=os.getenv("EMAILREP_KEY"),
+        hunter_key=os.getenv("HUNTER_KEY"),
+    )
     print_breach_results(data)
     if report:
         save_report(target, {"breach": data}, output)
@@ -528,7 +544,18 @@ def cmd_social(fb_id, tt_user, ig_user, tw_user, reddit_user, report, output):
 
     if fb_id:
         console.print("[dim]Fetching Facebook profile...[/dim]")
-        fb_data = facebook_recon(fb_id, fb_scraper_key=os.getenv("FACEBOOK_SCRAPER_KEY"))
+        fb_data = facebook_recon(
+            fb_id,
+            fb_scraper_key=os.getenv("FACEBOOK_SCRAPER_KEY"),
+            hibp_key=os.getenv("HIBP_API_KEY"),
+            breachdir_key=os.getenv("BREACHDIRECTORY_KEY"),
+            intelx_key=os.getenv("INTELX_KEY"),
+            dehashed_email=os.getenv("DEHASHED_EMAIL"),
+            dehashed_key=os.getenv("DEHASHED_KEY"),
+            snusbase_key=os.getenv("SNUSBASE_KEY"),
+            emailrep_key=os.getenv("EMAILREP_KEY"),
+            hunter_key=os.getenv("HUNTER_KEY"),
+        )
         all_data["facebook"] = fb_data
         print_facebook_results(fb_data)
         analysis = detect_suspicious_account(fb_data, platform="Facebook")
@@ -809,7 +836,18 @@ def cmd_menu():
             all_data = {}
             if fb_id:
                 console.print("[dim]Fetching Facebook profile...[/dim]")
-                fb_data = facebook_recon(fb_id, fb_scraper_key=os.getenv("FACEBOOK_SCRAPER_KEY"))
+                fb_data = facebook_recon(
+                    fb_id,
+                    fb_scraper_key=os.getenv("FACEBOOK_SCRAPER_KEY"),
+                    hibp_key=os.getenv("HIBP_API_KEY"),
+                    breachdir_key=os.getenv("BREACHDIRECTORY_KEY"),
+                    intelx_key=os.getenv("INTELX_KEY"),
+                    dehashed_email=os.getenv("DEHASHED_EMAIL"),
+                    dehashed_key=os.getenv("DEHASHED_KEY"),
+                    snusbase_key=os.getenv("SNUSBASE_KEY"),
+                    emailrep_key=os.getenv("EMAILREP_KEY"),
+                    hunter_key=os.getenv("HUNTER_KEY"),
+                )
                 all_data["facebook"] = fb_data
                 print_facebook_results(fb_data)
             if tt_user:
@@ -867,7 +905,14 @@ def cmd_menu():
                 pw = getpass.getpass("  Nhập mật khẩu (không hiển thị): ")
             bd_key = os.getenv("BREACHDIRECTORY_KEY") or None
             console.print("[dim]Đang kiểm tra các nguồn rò rỉ dữ liệu...[/dim]")
-            br_data = breach_check(tgt, password=pw, hibp_key=hibp_key, breachdir_key=bd_key)
+            br_data = breach_check(
+                tgt, password=pw, hibp_key=hibp_key, breachdir_key=bd_key,
+                dehashed_email=os.getenv("DEHASHED_EMAIL"),
+                dehashed_key=os.getenv("DEHASHED_KEY"),
+                snusbase_key=os.getenv("SNUSBASE_KEY"),
+                emailrep_key=os.getenv("EMAILREP_KEY"),
+                hunter_key=os.getenv("HUNTER_KEY"),
+            )
             print_breach_results(br_data)
             if do_report:
                 save_report(tgt, {"breach": br_data}, output_dir)

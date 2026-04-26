@@ -22,18 +22,149 @@ DNS_RECORD_TYPES = ["A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA", "SRV"]
 HEADERS = {"User-Agent": "OSINT-Tool/1.0 (Educational/Research Purpose)"}
 
 COMMON_SUBDOMAINS = [
-    "www", "mail", "ftp", "api", "dev", "staging", "test", "admin", "vpn",
-    "remote", "secure", "shop", "blog", "app", "static", "cdn", "ns1", "ns2",
-    "smtp", "pop", "imap", "webmail", "portal", "forum", "wiki", "docs", "git",
-    "gitlab", "jenkins", "support", "help", "mx", "m", "mobile", "assets",
-    "media", "images", "download", "upload", "backup", "db", "status",
-    "monitor", "dashboard", "panel", "cpanel", "whm", "beta", "alpha", "demo",
-    "new", "old", "web", "auth", "login", "sso", "vpn2", "intranet",
+    # Core
+    "www", "www2", "www3", "m", "mobile", "wap",
+    "app", "apps", "web", "site", "home",
+    # API
+    "api", "api1", "api2", "api3", "api4", "api-v1", "api-v2", "api-v3",
+    "v1", "v2", "v3", "rest", "graphql", "gql", "grpc",
+    # Mail
+    "mail", "mail2", "mail3", "smtp", "smtp2", "smtps",
+    "imap", "pop", "pop3", "webmail", "email", "mx", "mx1", "mx2", "mx3",
+    "autodiscover", "autoconfig",
+    # FTP / Files
+    "ftp", "ftp2", "sftp", "files", "file", "transfer", "uploads", "upload",
+    "download", "downloads",
+    # CDN / Static
+    "cdn", "cdn1", "cdn2", "static", "static1", "static2",
+    "assets", "asset", "img", "images", "image", "media", "video", "videos",
+    "audio", "content", "resources", "res", "pub", "public",
+    # Dev / Environment
+    "dev", "dev1", "dev2", "development", "local",
+    "staging", "stage", "stg", "uat", "qa", "qas",
+    "test", "test1", "test2", "testing", "sandbox", "preview",
+    "beta", "alpha", "demo", "canary", "rc", "release",
+    # Admin / Control panels
+    "admin", "admin2", "administrator", "administration",
+    "panel", "dashboard", "cpanel", "whm", "plesk", "directadmin",
+    "manage", "management", "control", "console", "backend",
+    # Security / Auth
+    "auth", "auth2", "oauth", "oauth2", "oidc", "saml",
+    "sso", "sso2", "login", "logout", "account", "accounts",
+    "id", "identity", "iam", "keycloak", "okta", "ping",
+    "cert", "certs", "crl", "ca", "pki", "vault",
+    # Networking
+    "vpn", "vpn1", "vpn2", "vpn3", "remote", "rdp", "citrix",
+    "proxy", "gateway", "gw", "fw", "firewall", "waf",
+    "lb", "loadbalancer", "ha", "ha1", "ha2",
+    "ns", "ns1", "ns2", "ns3", "ns4", "dns", "dns1", "dns2",
+    # Infrastructure / DevOps
+    "git", "gitlab", "github", "bitbucket", "svn",
+    "jenkins", "ci", "cd", "cicd", "build", "builds",
+    "docker", "registry", "k8s", "kubernetes", "helm",
+    "ansible", "puppet", "chef", "terraform",
+    "nexus", "artifactory", "sonar", "sonarqube",
+    "jira", "confluence", "wiki", "docs",
+    # Monitoring / Logging
+    "monitor", "monitoring", "monitor2",
+    "status", "healthcheck", "health", "ping",
+    "metrics", "stats", "statistics",
+    "grafana", "kibana", "elasticsearch", "elastic", "splunk",
+    "prometheus", "alertmanager", "zabbix", "nagios", "datadog",
+    "logs", "log", "logging", "graylog", "logstash",
+    # Database
+    "db", "db1", "db2", "db3", "database", "mysql", "mariadb",
+    "postgres", "postgresql", "redis", "redis1", "redis2",
+    "mongo", "mongodb", "cassandra", "couchdb", "elasticsearch",
+    "memcache", "memcached", "rabbitmq", "kafka", "zookeeper",
+    # E-commerce / Business
+    "shop", "store", "market", "marketplace",
+    "cart", "checkout", "payment", "pay", "billing",
+    "invoice", "invoices", "order", "orders", "track",
+    "crm", "erp", "sales", "support", "helpdesk", "help",
+    "desk", "ticket", "tickets", "service",
+    # Communication
+    "chat", "im", "voip", "conference", "meet", "video",
+    "forum", "forums", "community", "social",
+    "newsletter", "news", "blog", "blog2", "press",
+    # Storage / Backup
+    "backup", "backups", "bak", "restore", "storage", "s3", "bucket",
+    "archive", "archives", "repo", "repository",
+    # Network ranges
+    "intranet", "internal", "private", "extranet",
+    "office", "corp", "corporate",
+    "secure", "ssl", "tls",
+    # Geographic — Global
+    "us", "us-east", "us-west", "eu", "eu-west", "eu-central",
+    "ap", "ap-southeast", "ap-northeast",
+    "sg", "hk", "jp", "kr", "au", "uk", "de", "fr", "nl",
+    "ca", "br", "in",
+    # Geographic — Vietnam specific
+    "vn", "hn", "hanoi", "hcm", "saigon", "hcmc",
+    "dn", "danang", "hp", "haiphong", "ct", "cantho",
+    "hue", "qn", "quangnguyen", "dl", "dalat", "vt", "vungtau",
+    "binhduong", "dongnai",
+    # Vietnam platforms / portals
+    "portal", "dichvu", "dang-ky", "tra-cuu",
+    "evn", "vnpt", "viettel",
+    # Security research targets
+    "bounty", "bug", "security", "vuln", "pentest",
+    # Misc
+    "old", "new", "legacy", "deprecated",
+    "redirect", "link", "url", "short",
+    "verify", "verification", "activate", "activation",
+    "token", "reset", "recover", "recovery",
+    "sitemap", "rss", "feed", "feeds", "webhook",
+    "sandbox2", "integration", "external", "ext",
 ]
 
 
+def check_rdap(domain: str) -> dict:
+    """Query RDAP for richer registrant/contact data (often bypasses GDPR-redacted WHOIS)."""
+    rdap_urls = [
+        f"https://rdap.org/domain/{domain}",
+        f"https://rdap.verisign.com/com/v1/domain/{domain}",
+    ]
+    for url in rdap_urls:
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=8)
+            if resp.status_code == 200:
+                d = resp.json()
+                result = {"found": True, "registrar": None, "status": [], "contacts": []}
+                result["status"] = d.get("status", [])
+                for entity in d.get("entities", []):
+                    roles = entity.get("roles", [])
+                    vcard_data = entity.get("vcardArray", [None, []])
+                    vcard_fields = vcard_data[1] if len(vcard_data) > 1 else []
+                    contact = {"roles": roles}
+                    for field in vcard_fields:
+                        if not isinstance(field, list) or len(field) < 4:
+                            continue
+                        name = field[0]
+                        value = field[3]
+                        if name == "fn":
+                            contact["name"] = value
+                        elif name == "email":
+                            contact["email"] = value
+                        elif name == "tel":
+                            contact["phone"] = str(value)
+                        elif name == "adr" and isinstance(value, list):
+                            parts = [str(p) for p in value if p]
+                            contact["address"] = " ".join(parts)
+                        elif name == "org":
+                            contact["org"] = value
+                    if len(contact) > 1:  # has more than just 'roles'
+                        result["contacts"].append(contact)
+                    if "registrar" in roles and contact.get("name"):
+                        result["registrar"] = contact["name"]
+                return result
+        except Exception:
+            continue
+    return {"found": False}
+
+
 def whois_lookup(target: str, timeout: int = 15) -> dict:
-    result = {"target": target, "whois": {}, "error": None}
+    result = {"target": target, "whois": {}, "rdap": None, "error": None}
     container = {}
 
     def _do_whois():
@@ -71,6 +202,12 @@ def whois_lookup(target: str, timeout: int = 15) -> dict:
             "city": w.city,
             "address": w.address,
         }
+
+    # RDAP enrichment — richer contact data, often available even when WHOIS is redacted
+    rdap = check_rdap(target)
+    if rdap.get("found"):
+        result["rdap"] = rdap
+
     return result
 
 
@@ -101,6 +238,94 @@ def dns_enum(target: str) -> dict:
     return result
 
 
+def check_dns_security(target: str) -> dict:
+    """
+    Check DNS security features: DNSSEC, CAA records, DANE (TLSA).
+    Returns dict with security status and recommendations.
+    """
+    result = {
+        "target": target,
+        "dnssec": {"enabled": False, "details": []},
+        "caa": {"records": [], "has_issue": False, "has_wildcard": False},
+        "dane": {"records": [], "enabled": False},
+        "security_score": 0,
+        "recommendations": [],
+    }
+
+    resolver = dns.resolver.Resolver()
+    resolver.timeout = 5
+    resolver.lifetime = 5
+
+    # Check DNSSEC
+    try:
+        # Try to get DNSKEY records (indicates DNSSEC is configured)
+        answers = resolver.resolve(target, "DNSKEY")
+        if answers:
+            result["dnssec"]["enabled"] = True
+            result["dnssec"]["details"].append(f"Found {len(answers)} DNSKEY records")
+            result["security_score"] += 30
+        else:
+            result["recommendations"].append("Enable DNSSEC to prevent DNS spoofing attacks")
+    except dns.resolver.NoAnswer:
+        result["dnssec"]["details"].append("DNSSEC not configured")
+        result["recommendations"].append("Enable DNSSEC to prevent DNS spoofing attacks")
+    except Exception as e:
+        result["dnssec"]["details"].append(f"Unable to check: {str(e)[:50]}")
+
+    # Check CAA records (Certificate Authority Authorization)
+    try:
+        answers = resolver.resolve(target, "CAA")
+        for rdata in answers:
+            caa_str = str(rdata)
+            result["caa"]["records"].append(caa_str)
+
+            # Parse CAA record
+            if "issue" in caa_str.lower():
+                result["caa"]["has_issue"] = True
+            if "issuewild" in caa_str.lower():
+                result["caa"]["has_wildcard"] = True
+
+        if result["caa"]["records"]:
+            result["security_score"] += 25
+        else:
+            result["recommendations"].append(
+                "Add CAA records to control which CAs can issue certificates for your domain"
+            )
+    except dns.resolver.NoAnswer:
+        result["recommendations"].append(
+            "Add CAA records to control which CAs can issue certificates for your domain"
+        )
+    except dns.resolver.NXDOMAIN:
+        pass
+    except Exception:
+        pass
+
+    # Check DANE/TLSA records (for _443._tcp subdomain)
+    try:
+        tlsa_query = f"_443._tcp.{target}"
+        answers = resolver.resolve(tlsa_query, "TLSA")
+        for rdata in answers:
+            result["dane"]["records"].append(str(rdata))
+            result["dane"]["enabled"] = True
+
+        if result["dane"]["enabled"]:
+            result["security_score"] += 20
+    except Exception:
+        pass
+
+    # Grade security score
+    if result["security_score"] >= 70:
+        result["grade"] = "A"
+    elif result["security_score"] >= 50:
+        result["grade"] = "B"
+    elif result["security_score"] >= 30:
+        result["grade"] = "C"
+    else:
+        result["grade"] = "F"
+
+    return result
+
+
 def resolve_ip(domain: str) -> str:
     try:
         return socket.gethostbyname(domain)
@@ -126,6 +351,22 @@ def print_whois(data: dict):
             table.add_row(field.replace("_", " ").title(), str(value))
 
     console.print(table)
+
+    # RDAP enrichment display
+    rdap = data.get("rdap")
+    if rdap and rdap.get("found"):
+        console.print("\n[bold cyan]─── RDAP Contact Data ───[/bold cyan]")
+        if rdap.get("registrar"):
+            console.print(f"  Registrar: [green]{rdap['registrar']}[/green]")
+        if rdap.get("status"):
+            console.print(f"  Status: [yellow]{', '.join(rdap['status'])}[/yellow]")
+        for contact in rdap.get("contacts", []):
+            roles = ", ".join(contact.get("roles", []))
+            console.print(f"  [bold]Contact ({roles})[/bold]")
+            for key in ("name", "org", "email", "phone", "address"):
+                val = contact.get(key)
+                if val:
+                    console.print(f"    {key.title()}: {val}")
 
 
 def print_dns(data: dict):
@@ -509,3 +750,56 @@ def print_zone_transfer(data: dict):
         tested = ", ".join(data.get("tested_ns", []))
         console.print(f"  [green]✓ Zone transfer bị từ chối bởi tất cả nameservers[/green]")
         console.print(f"  [dim]Đã kiểm tra: {tested}[/dim]")
+
+
+def print_dns_security(data: dict):
+    """Display DNS security analysis results (DNSSEC, CAA, DANE)."""
+    target = data.get("target", "")
+    console.print(f"\n[bold cyan]═══ DNS SECURITY ANALYSIS: {target} ═══[/bold cyan]")
+
+    score = data.get("security_score", 0)
+    grade = data.get("grade", "F")
+    grade_colors = {"A": "bold green", "B": "green", "C": "yellow", "F": "red"}
+    grade_color = grade_colors.get(grade, "white")
+
+    console.print(f"  [bold]DNS Security Grade:[/bold] [{grade_color}]{grade}[/{grade_color}] ({score}/75)")
+
+    # DNSSEC
+    dnssec = data.get("dnssec", {})
+    if dnssec.get("enabled"):
+        console.print("\n  [bold green]✓ DNSSEC:[/bold green] [green]Enabled[/green]")
+        for detail in dnssec.get("details", []):
+            console.print(f"    • {detail}")
+    else:
+        console.print("\n  [bold red]✗ DNSSEC:[/bold red] [red]Not configured[/red]")
+        for detail in dnssec.get("details", []):
+            console.print(f"    • {detail}")
+
+    # CAA Records
+    caa = data.get("caa", {})
+    caa_records = caa.get("records", [])
+    if caa_records:
+        console.print(f"\n  [bold green]✓ CAA Records:[/bold green] [green]{len(caa_records)} record(s) found[/green]")
+        for record in caa_records[:5]:
+            console.print(f"    • {record}")
+        if len(caa_records) > 5:
+            console.print(f"    [dim]... and {len(caa_records) - 5} more[/dim]")
+    else:
+        console.print("\n  [bold red]✗ CAA Records:[/bold red] [red]Not configured[/red]")
+
+    # DANE/TLSA
+    dane = data.get("dane", {})
+    if dane.get("enabled"):
+        console.print(f"\n  [bold green]✓ DANE/TLSA:[/bold green] [green]{len(dane['records'])} record(s) found[/green]")
+        for record in dane.get("records", [])[:3]:
+            console.print(f"    • {record}")
+    else:
+        console.print("\n  [bold yellow]⚠ DANE/TLSA:[/bold yellow] [yellow]Not configured (optional)[/yellow]")
+
+    # Recommendations
+    recommendations = data.get("recommendations", [])
+    if recommendations:
+        console.print("\n  [bold yellow]📋 Security Recommendations:[/bold yellow]")
+        for i, rec in enumerate(recommendations, 1):
+            console.print(f"    {i}. {rec}")
+

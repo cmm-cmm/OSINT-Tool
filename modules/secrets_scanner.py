@@ -12,6 +12,7 @@ Quét các file nhạy cảm bị lộ trên website:
   - AWS/GCP/Azure key patterns
   - Cloud storage bucket URLs trong source
   - phpinfo() exposure
+  - Vulnerability risk scoring
 
 Không cần API key — chỉ dùng requests.
 """
@@ -27,6 +28,57 @@ console = Console()
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; OSINT-Tool/1.0; +Research)"}
 TIMEOUT = 8
 
+# Severity levels for findings
+SEVERITY_CRITICAL = "CRITICAL"
+SEVERITY_HIGH = "HIGH"
+SEVERITY_MEDIUM = "MEDIUM"
+SEVERITY_LOW = "LOW"
+SEVERITY_INFO = "INFO"
+
+# Path severity mapping
+PATH_SEVERITY = {
+    ".git/": SEVERITY_CRITICAL,
+    ".env": SEVERITY_CRITICAL,
+    ".env.production": SEVERITY_CRITICAL,
+    "id_rsa": SEVERITY_CRITICAL,
+    "database.sql": SEVERITY_CRITICAL,
+    "db.sql": SEVERITY_CRITICAL,
+    "dump.sql": SEVERITY_CRITICAL,
+    "backup.sql": SEVERITY_CRITICAL,
+    "wp-config.php": SEVERITY_CRITICAL,
+    ".htpasswd": SEVERITY_HIGH,
+    "phpinfo.php": SEVERITY_HIGH,
+    "actuator/env": SEVERITY_HIGH,
+    "backup.zip": SEVERITY_HIGH,
+    "admin/": SEVERITY_MEDIUM,
+    "swagger.json": SEVERITY_MEDIUM,
+    "graphql": SEVERITY_MEDIUM,
+    "robots.txt": SEVERITY_INFO,
+    "security.txt": SEVERITY_INFO,
+}
+
+def get_finding_severity(path: str, has_secrets: bool = False) -> str:
+    """Determine severity of a finding based on path and content."""
+    if has_secrets:
+        return SEVERITY_CRITICAL
+
+    path_lower = path.lower()
+
+    # Check exact matches first
+    for pattern, severity in PATH_SEVERITY.items():
+        if pattern in path_lower:
+            return severity
+
+    # Default based on file type
+    if any(ext in path_lower for ext in ['.bak', '.old', '.backup', '.sql', '.zip', '.tar.gz']):
+        return SEVERITY_HIGH
+    elif any(word in path_lower for word in ['config', 'credentials', 'password', 'secret']):
+        return SEVERITY_HIGH
+    elif any(word in path_lower for word in ['admin', 'debug', 'test', 'swagger', 'api-docs']):
+        return SEVERITY_MEDIUM
+
+    return SEVERITY_LOW
+
 # ─── Sensitive paths to probe ─────────────────────────────────────────────────
 
 _GIT_PATHS = [
@@ -40,22 +92,35 @@ _ENV_PATHS = [
     ".env",
     ".env.local",
     ".env.production",
+    ".env.staging",
+    ".env.development",
     ".env.backup",
     ".env.bak",
+    ".env.example",
+    ".env.sample",
+    ".env.dist",
     "config.env",
     "app.env",
+    ".envrc",
+    "env.js",
+    "env.json",
 ]
 
 _BACKUP_PATHS = [
     "backup.zip",
     "backup.tar.gz",
     "backup.sql",
+    "backup.tar",
+    "backup.7z",
     "db.sql",
     "database.sql",
     "dump.sql",
+    "data.sql",
     "site.zip",
     "www.zip",
     "public_html.zip",
+    "html.zip",
+    "web.zip",
     "wp-config.php.bak",
     "config.php.bak",
     "config.bak",
@@ -63,12 +128,18 @@ _BACKUP_PATHS = [
     "settings.py.bak",
     ".htpasswd",
     ".htaccess",
+    "id_rsa",
+    "id_rsa.pub",
+    "id_ed25519",
+    "known_hosts",
+    "authorized_keys",
 ]
 
 _SENSITIVE_PATHS = [
     "phpinfo.php",
     "info.php",
     "test.php",
+    "debug.php",
     "admin/",
     "wp-admin/",
     "administrator/",
@@ -82,8 +153,11 @@ _SENSITIVE_PATHS = [
     "actuator/env",
     "actuator/health",
     "actuator/mappings",
+    "actuator/beans",
+    "actuator/loggers",
     "api/swagger.json",
     "api/v1/swagger.json",
+    "api/v2/swagger.json",
     "swagger.json",
     "swagger-ui.html",
     "swagger-ui/index.html",
@@ -95,6 +169,45 @@ _SENSITIVE_PATHS = [
     "crossdomain.xml",
     "clientaccesspolicy.xml",
     "sitemap.xml",
+    # Config files commonly left accessible
+    "config.yml",
+    "config.yaml",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "Dockerfile",
+    "appsettings.json",
+    "appsettings.Development.json",
+    "application.properties",
+    "application.yml",
+    "settings.json",
+    "credentials.json",
+    "secrets.json",
+    "secrets.yaml",
+    "config.json",
+    "parameters.yml",
+    "database.yml",
+    "wp-config.php",
+    "configuration.php",
+    "settings.php",
+    # Node.js / JS
+    "package.json",
+    "package-lock.json",
+    "yarn.lock",
+    "composer.json",
+    "requirements.txt",
+    # Source map
+    "main.js.map",
+    "app.js.map",
+    "bundle.js.map",
+    # Monitoring / debug
+    "_profiler",           # Symfony profiler
+    "_debugbar",
+    "telescope",           # Laravel Telescope
+    "horizon",             # Laravel Horizon
+    "kibana",
+    "grafana",
+    "prometheus",
+    "metrics",
 ]
 
 _SECURITY_TXT_PATHS = [
@@ -129,6 +242,18 @@ _API_KEY_PATTERNS = [
     (r"SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}", "SendGrid API Key"),
     # Firebase
     (r"[a-z0-9\-]+\.firebaseio\.com", "Firebase Database URL"),
+    # Slack
+    (r"xox[baprs]-[A-Za-z0-9\-]{10,48}", "Slack Token"),
+    (r"https://hooks\.slack\.com/services/[A-Za-z0-9/]+", "Slack Webhook"),
+    # Azure
+    (r"(?i)AccountKey=[A-Za-z0-9+/=]{86}==", "Azure Storage Key"),
+    # JWT (3-part base64url)
+    (r"eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}", "JWT Token"),
+    # Mailchimp / Mailgun
+    (r"[a-f0-9]{32}-us[0-9]{1,2}", "Mailchimp API Key"),
+    (r"key-[a-zA-Z0-9]{32}", "Mailgun API Key"),
+    # NPM
+    (r"npm_[A-Za-z0-9]{36}", "NPM Access Token"),
     # Private keys
     (r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----", "Private Key"),
 ]
@@ -156,21 +281,28 @@ def _probe_path(base_url: str, path: str) -> dict | None:
         if resp.status_code in (200, 206):
             content_len = len(resp.content)
             content_preview = resp.text[:200].strip() if resp.text else ""
+
+            # Determine severity
+            severity = get_finding_severity(path, has_secrets=False)
+
             return {
                 "path": path,
                 "url": url,
                 "status": resp.status_code,
                 "size": content_len,
                 "preview": content_preview,
+                "severity": severity,
             }
         elif resp.status_code == 403:
             # 403 means it exists but access is denied (still useful intel)
+            severity = get_finding_severity(path, has_secrets=False)
             return {
                 "path": path,
                 "url": url,
                 "status": 403,
                 "size": 0,
                 "preview": "(access denied — file exists)",
+                "severity": severity,
             }
     except requests.exceptions.SSLError:
         pass
@@ -214,6 +346,31 @@ def _scan_page_for_secrets(url: str) -> list:
     except Exception:
         pass
     return findings
+
+
+def _extract_js_urls(base_url: str, page_source: str) -> list:
+    """Extract unique JS bundle URLs from HTML source (limit 8)."""
+    from urllib.parse import urljoin
+    seen = set()
+    scripts = []
+    for match in re.finditer(
+        r'<script[^>]+src=["\']([^"\']+\.js(?:\?[^"\']*)?)["\']',
+        page_source,
+        re.IGNORECASE,
+    ):
+        src = match.group(1)
+        if src.startswith(("http://", "https://")):
+            url = src
+        elif src.startswith("//"):
+            url = "https:" + src
+        else:
+            url = urljoin(base_url, src)
+        if url not in seen:
+            seen.add(url)
+            scripts.append(url)
+        if len(scripts) >= 8:
+            break
+    return scripts
 
 
 def secrets_scan(target: str) -> dict:
@@ -335,6 +492,21 @@ def secrets_scan(target: str) -> dict:
 
     # ── Scan home page source for secrets ────────────────────────────────────
     result["secrets_in_source"] = _scan_page_for_secrets(base_url)
+
+    # ── Scan linked JS bundles for secrets ───────────────────────────────────
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+            home_resp = requests.get(base_url, headers=HEADERS, timeout=12, verify=False)
+        if home_resp.status_code == 200:
+            js_urls = _extract_js_urls(base_url, home_resp.text)
+            if js_urls:
+                console.print(f"  [dim]Scanning {len(js_urls)} JS bundle(s)...[/dim]")
+            for js_url in js_urls:
+                js_secrets = _scan_page_for_secrets(js_url)
+                result["secrets_in_source"].extend(js_secrets)
+    except Exception:
+        pass
 
     # ── Summary ──────────────────────────────────────────────────────────────
     crit = len(result["exposed_git"]) + len(result["exposed_env"])

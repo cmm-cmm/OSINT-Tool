@@ -92,6 +92,34 @@ def _get_number_type(parsed) -> str:
     return type_map.get(phonenumbers.number_type(parsed), "Unknown")
 
 
+def check_veriphone(phone_e164: str) -> dict:
+    """Query Veriphone.io for live carrier & line-type (100/day free, no API key needed)."""
+    try:
+        resp = requests.get(
+            "https://api.veriphone.io/v2/verify",
+            params={"phone": phone_e164},
+            headers=HEADERS,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            d = resp.json()
+            if d.get("status") == "success":
+                return {
+                    "success": True,
+                    "valid": d.get("phone_valid", False),
+                    "country": d.get("country"),
+                    "country_code": d.get("country_code"),
+                    "carrier": d.get("carrier"),
+                    "line_type": d.get("phone_type"),
+                    "local_format": d.get("phone"),
+                    "international_format": d.get("international_number"),
+                }
+            return {"success": False, "error": d.get("message", "Invalid number")}
+        return {"success": False, "error": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def check_numverify(phone_e164: str, api_key: str) -> dict:
     """Query APILayer Number Verification API for live carrier and line-type data (1000 free req/month)."""
     url = "https://api.apilayer.com/number_verification/validate"
@@ -124,16 +152,41 @@ def check_numverify(phone_e164: str, api_key: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def generate_phone_search_links(phone_e164: str) -> dict:
+def generate_phone_search_links(phone_e164: str, country_code: int = None) -> dict:
     clean = phone_e164.replace("+", "").replace(" ", "")
     encoded_full = requests.utils.quote(phone_e164)
-    return {
+    is_vn = country_code == 84
+
+    links: dict = {
         "Google": f"https://www.google.com/search?q=%22{encoded_full}%22",
-        "Truecaller": f"https://www.truecaller.com/search/vn/{clean}",
+        "Bing": f"https://www.bing.com/search?q=%22{encoded_full}%22",
+        "Truecaller": (
+            f"https://www.truecaller.com/search/vn/{clean}"
+            if is_vn else
+            f"https://www.truecaller.com/search/{clean}"
+        ),
+        "GetContact": f"https://web.getcontact.com/search/{clean}",
         "PhoneBook.cz": f"https://phonebook.cz/?q={clean}&s=phonenumber",
         "Sync.me": f"https://sync.me/search/?number={clean}",
         "NumLookup": f"https://www.numlookup.com/?number={encoded_full}",
+        "WhoCalledMe": f"https://www.whocalledme.com/PhoneNumber/{clean}",
+        "SpamCalls": f"https://www.spamcalls.net/en/search?phone={clean}&provider=spam",
     }
+    if is_vn:
+        # Convert to national format 0xxxxxxxxx
+        national = clean.lstrip("84")
+        if not national.startswith("0"):
+            national = "0" + national
+        links["Zalo Search"] = (
+            f"https://www.google.com/search?q=%22{requests.utils.quote(national)}%22"
+            "+site%3Azalo.me+OR+site%3Afacebook.com"
+        )
+        links["1900.com.vn"] = f"https://1900.com.vn/so-dien-thoai/{national}"
+        links["DanTri"] = (
+            f"https://www.google.com/search?q=%22{requests.utils.quote(national)}%22"
+            "+site%3Adantri.com.vn+OR+site%3Avnexpress.net"
+        )
+    return links
 
 
 def phone_lookup(phone_number: str, region: str = "VN", numverify_key: str = None) -> dict:
@@ -141,7 +194,11 @@ def phone_lookup(phone_number: str, region: str = "VN", numverify_key: str = Non
     if data.get("error"):
         return data
 
-    data["search_links"] = generate_phone_search_links(data["e164_format"])
+    cc = data.get("country_code")
+    data["search_links"] = generate_phone_search_links(data["e164_format"], country_code=cc)
+
+    # Veriphone — free 100/day, no key
+    data["veriphone"] = check_veriphone(data["e164_format"])
 
     if numverify_key:
         data["numverify"] = check_numverify(data["e164_format"], numverify_key)
@@ -166,6 +223,19 @@ def print_phone_results(data: dict):
         console.print(f"  Carrier     : {data['carrier']}")
     if data.get("timezones"):
         console.print(f"  Timezones   : {', '.join(data['timezones'])}")
+
+    # Veriphone live enrichment (free)
+    vp = data.get("veriphone", {})
+    if vp.get("success") and vp.get("valid"):
+        console.print(f"\n  [bold]Veriphone.io (live, free):[/bold]")
+        if vp.get("line_type"):
+            console.print(f"    Line Type : [cyan]{vp['line_type']}[/cyan]")
+        if vp.get("carrier"):
+            console.print(f"    Carrier   : {vp['carrier']}")
+        if vp.get("country"):
+            console.print(f"    Country   : {vp['country']}")
+    elif vp.get("error"):
+        console.print(f"\n  [dim]Veriphone: {vp['error']}[/dim]")
 
     # NumVerify live enrichment
     nv = data.get("numverify", {})

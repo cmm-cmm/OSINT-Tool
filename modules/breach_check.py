@@ -205,7 +205,276 @@ def check_hibp_email(email: str, api_key: str | None) -> dict:
     return result
 
 
-# ─── Investigation dorks ──────────────────────────────────────────────────
+# ─── ⑤ Dehashed — trả về bản ghi rò rỉ thực tế ($5/tháng) ─────────────────
+
+def check_dehashed(
+    query_value: str,
+    query_type: str = "email",
+    api_email: str | None = None,
+    api_key: str | None = None,
+) -> dict:
+    """
+    Dehashed — tra cứu breach database trả về dữ liệu thực tế.
+    Đăng ký tại: https://dehashed.com ($5/tháng, 5.000 queries)
+    Thêm vào .env: DEHASHED_EMAIL=your@email.com  DEHASHED_KEY=your_api_key
+
+    query_type: email | username | password | name | ip_address | address | phone | vin
+    Trả về entries với: email, name, username, password, hashed_password, address, phone, ip_address, database_name
+    """
+    result = {
+        "found": False, "entries": [], "total": 0,
+        "balance": None, "error": None, "note": None,
+    }
+    if not api_email or not api_key:
+        result["note"] = (
+            "Chưa có Dehashed API key ($5/tháng — 5.000 queries).\n"
+            "  Đăng ký: https://dehashed.com\n"
+            "  Thêm vào .env: DEHASHED_EMAIL=your@email DEHASHED_KEY=your_api_key"
+        )
+        return result
+    _allowed = {"email", "username", "password", "hashed_password", "name",
+                "ip_address", "address", "phone", "vin"}
+    if query_type not in _allowed:
+        result["error"] = f"query_type không hợp lệ: {query_type}"
+        return result
+    try:
+        r = requests.get(
+            "https://api.dehashed.com/search",
+            params={"query": f"{query_type}:{query_value}", "size": 100},
+            auth=(api_email, api_key),
+            headers={"Accept": "application/json", "User-Agent": "OSINT-Tool/1.0"},
+            timeout=15,
+            verify=True,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            result["found"] = bool(data.get("entries"))
+            result["entries"] = data.get("entries") or []
+            result["total"] = data.get("total", 0)
+            result["balance"] = data.get("balance")
+        elif r.status_code == 401:
+            result["error"] = "Dehashed: Email hoặc API key không hợp lệ"
+        elif r.status_code == 429:
+            result["error"] = "Dehashed: Rate limited — thử lại sau"
+        elif r.status_code == 400:
+            result["error"] = f"Dehashed: Bad request — {r.text[:120]}"
+        else:
+            result["error"] = f"HTTP {r.status_code}"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+# ─── ⑥ Snusbase — breach database thực tế ($2/tháng) ────────────────────
+
+def check_snusbase(
+    query_value: str,
+    query_type: str = "email",
+    api_key: str | None = None,
+) -> dict:
+    """
+    Snusbase v3 — breach record lookup trả về dữ liệu thực tế.
+    Đăng ký tại: https://snusbase.com ($2/tháng)
+    Thêm vào .env: SNUSBASE_KEY=your_api_key
+
+    query_type: email | username | password | hash | name | ip
+    Trả về entries với: email, username, password, hash, hash_type, name, ip, table (tên database)
+    """
+    result = {
+        "found": False, "entries": [], "total": 0,
+        "error": None, "note": None,
+    }
+    if not api_key:
+        result["note"] = (
+            "Chưa có Snusbase API key ($2/tháng).\n"
+            "  Đăng ký: https://snusbase.com\n"
+            "  Thêm vào .env: SNUSBASE_KEY=your_api_key"
+        )
+        return result
+    _allowed = {"email", "username", "password", "hash", "name", "ip"}
+    if query_type not in _allowed:
+        result["error"] = f"query_type không hợp lệ: {query_type}"
+        return result
+    try:
+        r = requests.post(
+            "https://api3.snusbase.com/data/search",
+            headers={
+                "Authorization": api_key,
+                "Content-Type": "application/json",
+                "User-Agent": "OSINT-Tool/1.0",
+            },
+            json={"terms": [query_value], "types": [query_type], "wildcard": False},
+            timeout=15,
+            verify=True,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            all_entries: list[dict] = []
+            for entries_list in (data.get("results") or {}).values():
+                if isinstance(entries_list, list):
+                    all_entries.extend(entries_list)
+            result["found"] = bool(all_entries)
+            result["entries"] = all_entries
+            result["total"] = data.get("size", len(all_entries))
+        elif r.status_code == 401:
+            result["error"] = "Snusbase: API key không hợp lệ"
+        elif r.status_code == 429:
+            result["error"] = "Snusbase: Rate limited"
+        else:
+            result["error"] = f"HTTP {r.status_code}"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+# ─── ⑦ Holehe — email đã đăng ký trên những trang nào (free) ────────────
+
+def check_holehe(email: str) -> dict:
+    """
+    Holehe — kiểm tra email đã được đăng ký trên 100+ dịch vụ nào.
+    Miễn phí, không cần API key. Cần cài: pip install holehe
+
+    Trả về danh sách {name, domain} của các dịch vụ tìm thấy email này.
+    """
+    result = {"registered_sites": [], "checked": 0, "error": None, "note": None}
+    try:
+        import subprocess, re as _re, sys
+        proc = subprocess.run(
+            [sys.executable, "-m", "holehe", "--no-color", "--only-registered", email],
+            capture_output=True, text=True, timeout=90, encoding="utf-8",
+        )
+        output = proc.stdout + proc.stderr
+        if "ModuleNotFoundError" in output or "No module named" in output:
+            result["note"] = "holehe chưa được cài: pip install holehe"
+            return result
+        registered = []
+        for line in output.splitlines():
+            m = _re.match(r"\[\+\]\s+(.+?)\s*(?:-\s*([\w.\-]+))?$", line.strip())
+            if m:
+                registered.append({
+                    "name": m.group(1).strip().rstrip("-").strip(),
+                    "domain": (m.group(2) or "").strip(),
+                })
+        total_lines = output.count("[+]") + output.count("[-]") + output.count("[x]")
+        result["registered_sites"] = registered
+        result["checked"] = total_lines
+    except FileNotFoundError:
+        result["note"] = "holehe chưa được cài: pip install holehe"
+    except subprocess.TimeoutExpired:
+        result["error"] = "holehe timeout (>90s)"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+# ─── ⑧ EmailRep.io — email reputation & breach signals (free/key optional) ─
+
+def check_emailrep(email: str, api_key: str | None = None) -> dict:
+    """
+    EmailRep.io — tín hiệu reputation về email: suspicious, blacklisted,
+    credentials_leaked, malicious_activity, first_seen, profiles liên kết.
+    Free: 1000 req/ngày (không cần key), có key thì rate limit cao hơn.
+    Thêm vào .env: EMAILREP_KEY=your_key
+    """
+    result = {
+        "reputation": None, "suspicious": None, "references": 0,
+        "blacklisted": False, "credentials_leaked": False,
+        "malicious_activity": False, "data_breach": False,
+        "first_seen": None, "last_seen": None,
+        "profiles": [], "error": None,
+    }
+    try:
+        headers: dict = {"User-Agent": "OSINT-Tool/1.0 (Educational/Research Purpose)"}
+        if api_key:
+            headers["Key"] = api_key
+        r = requests.get(
+            f"https://emailrep.io/{email}",
+            headers=headers,
+            timeout=10,
+            verify=True,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            result["reputation"] = data.get("reputation")
+            result["suspicious"] = data.get("suspicious")
+            result["references"] = data.get("references", 0)
+            det = data.get("details") or {}
+            result["blacklisted"] = bool(det.get("blacklisted"))
+            result["credentials_leaked"] = bool(det.get("credentials_leaked"))
+            result["malicious_activity"] = bool(det.get("malicious_activity"))
+            result["data_breach"] = bool(det.get("data_breach"))
+            result["first_seen"] = det.get("first_seen")
+            result["last_seen"] = det.get("last_seen")
+            result["profiles"] = det.get("profiles") or []
+        elif r.status_code == 429:
+            result["error"] = "EmailRep: Rate limited (free: 1000/ngày)"
+        elif r.status_code == 401:
+            result["error"] = "EmailRep: API key không hợp lệ"
+        elif r.status_code == 400:
+            result["error"] = "EmailRep: Email không hợp lệ"
+        else:
+            result["error"] = f"HTTP {r.status_code}"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+# ─── ⑨ Hunter.io — email person enrichment (25 req/tháng free) ─────────
+
+def check_hunter_email(email: str, api_key: str | None = None) -> dict:
+    """
+    Hunter.io email enrichment — tìm tên, chức danh, công ty, SĐT, LinkedIn, Twitter
+    liên quan đến địa chỉ email.
+    Free: 25 enrichments/tháng. Đăng ký: https://hunter.io
+    Thêm vào .env: HUNTER_KEY=your_api_key
+    """
+    result = {
+        "found": False, "first_name": None, "last_name": None,
+        "position": None, "organization": None, "phone_number": None,
+        "twitter": None, "linkedin": None, "city": None, "country": None,
+        "error": None, "note": None,
+    }
+    if not api_key:
+        result["note"] = (
+            "HUNTER_KEY chưa được cài (free: 25 enrichments/tháng).\n"
+            "  Đăng ký: https://hunter.io/users/sign_up\n"
+            "  Thêm vào .env: HUNTER_KEY=your_api_key"
+        )
+        return result
+    try:
+        r = requests.get(
+            "https://api.hunter.io/v2/email-enrichment",
+            params={"email": email, "api_key": api_key},
+            headers={"User-Agent": "OSINT-Tool/1.0"},
+            timeout=12,
+            verify=True,
+        )
+        if r.status_code == 200:
+            data = r.json().get("data") or {}
+            result["found"] = bool(data)
+            result["first_name"] = data.get("first_name")
+            result["last_name"] = data.get("last_name")
+            result["position"] = data.get("position")
+            result["organization"] = data.get("organization")
+            result["phone_number"] = data.get("phone_number")
+            result["twitter"] = data.get("twitter")
+            result["linkedin"] = data.get("linkedin_url")
+            result["city"] = data.get("city")
+            result["country"] = data.get("country")
+        elif r.status_code == 404:
+            result["found"] = False
+        elif r.status_code == 429:
+            result["error"] = "Hunter.io: Rate limited — free: 25/tháng"
+        elif r.status_code == 401:
+            result["error"] = "Hunter.io: API key không hợp lệ"
+        else:
+            result["error"] = f"HTTP {r.status_code}"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+
 
 # Severity scoring based on data classes exposed in breaches
 _DATA_CLASS_SEVERITY = {
@@ -325,21 +594,39 @@ def breach_check(
     password: str | None = None,
     hibp_key: str | None = None,
     breachdir_key: str | None = None,
+    dehashed_email: str | None = None,
+    dehashed_key: str | None = None,
+    snusbase_key: str | None = None,
+    emailrep_key: str | None = None,
+    hunter_key: str | None = None,
 ) -> dict:
     """
     Kiểm tra toàn diện: email/username có bị lộ trong các vụ breach không.
 
-    Args:
-        target:        Email hoặc username cần kiểm tra.
-        password:      Mật khẩu để kiểm tra qua HIBP Pwned Passwords (tùy chọn).
-        hibp_key:      HIBP API key (env: HIBP_API_KEY).
-        breachdir_key: BreachDirectory RapidAPI key (env: BREACHDIRECTORY_KEY).
+    Nguồn miễn phí (không cần key):
+      ① LeakCheck.io   — tìm tên nguồn breach
+      ⑦ Holehe          — email đăng ký trên 100+ dịch vụ nào
+      ⑧ EmailRep.io     — reputation, blacklist, breach signals
+
+    Nguồn free tier (cần đăng ký miễn phí):
+      ② BreachDirectory — loại dữ liệu bị lộ (env: BREACHDIRECTORY_KEY)
+      ④ HIBP            — danh sách breach nổi tiếng ($3.95/mo, env: HIBP_API_KEY)
+      ⑨ Hunter.io       — enrichment người liên kết (env: HUNTER_KEY)
+
+    Nguồn trả phí (bản ghi đầy đủ — password, name, address, phone thực tế):
+      ⑤ Dehashed        — $5/mo (env: DEHASHED_EMAIL + DEHASHED_KEY)
+      ⑥ Snusbase        — $2/mo (env: SNUSBASE_KEY)
     """
     result = {
         "target": target,
         "leakcheck": None,
         "breachdirectory": None,
         "hibp": None,
+        "dehashed": None,
+        "snusbase": None,
+        "holehe": None,
+        "emailrep": None,
+        "hunter": None,
         "pwned_password": None,
         "dorks": _breach_dorks(target),
         "summary": {
@@ -348,6 +635,8 @@ def breach_check(
             "sources_checked": [],
         },
     }
+
+    is_email = bool(re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', target))
 
     # ① LeakCheck public (hoàn toàn miễn phí)
     lc = check_leakcheck_public(target)
@@ -377,6 +666,38 @@ def breach_check(
         pwned = check_pwned_password(password)
         result["pwned_password"] = pwned
         result["summary"]["sources_checked"].append("HIBP Pwned Passwords")
+
+    # ⑤ Dehashed — bản ghi thực tế (email, name, phone, address, ip, hash)
+    dh = check_dehashed(target, "email" if is_email else "username",
+                        dehashed_email, dehashed_key)
+    result["dehashed"] = dh
+    if dehashed_email and dehashed_key:
+        result["summary"]["sources_checked"].append("Dehashed")
+        if dh.get("found"):
+            result["summary"]["total_breaches"] += min(dh.get("total", 0), 9999)
+
+    # ⑥ Snusbase — bản ghi thực tế
+    sn = check_snusbase(target, "email" if is_email else "username", snusbase_key)
+    result["snusbase"] = sn
+    if snusbase_key:
+        result["summary"]["sources_checked"].append("Snusbase")
+        if sn.get("found"):
+            result["summary"]["total_breaches"] += sn.get("total", 0)
+
+    # ⑦ Holehe — tìm xem email đăng ký trên dịch vụ nào (chỉ chạy với email)
+    if is_email:
+        result["holehe"] = check_holehe(target)
+        result["summary"]["sources_checked"].append("Holehe")
+
+    # ⑧ EmailRep (miễn phí, key tùy chọn) — chỉ chạy với email
+    if is_email:
+        result["emailrep"] = check_emailrep(target, emailrep_key)
+        result["summary"]["sources_checked"].append("EmailRep.io")
+
+    # ⑨ Hunter.io enrichment (cần key, miễn phí 25/tháng) — chỉ với email
+    if is_email and hunter_key:
+        result["hunter"] = check_hunter_email(target, hunter_key)
+        result["summary"]["sources_checked"].append("Hunter.io")
 
     return result
 
@@ -489,10 +810,156 @@ def print_breach_results(data: dict):
         if pastes:
             console.print(f"    [yellow]⚠ Xuất hiện trong {len(pastes)} paste(s) công khai[/yellow]")
 
-    # ⑤ Pwned Passwords
+    # ⑤ Dehashed — actual breach records
+    dh = data.get("dehashed") or {}
+    console.print("\n  [bold cyan]⑤ Dehashed[/bold cyan] [dim](bản ghi thực tế — $5/tháng)[/dim]")
+    if dh.get("note"):
+        for line in dh["note"].splitlines():
+            console.print(f"    [dim]{line}[/dim]")
+    elif dh.get("error"):
+        console.print(f"    [red]✗ {dh['error']}[/red]")
+    elif dh.get("found"):
+        entries = dh.get("entries") or []
+        total = dh.get("total", len(entries))
+        bal = f"  [dim](balance: {dh['balance']} queries còn lại)[/dim]" if dh.get("balance") else ""
+        console.print(f"    [bold red]⚠ {total} bản ghi tìm thấy{bal}:[/bold red]")
+        dt = Table(show_header=True, header_style="bold red", show_lines=True, padding=(0, 1))
+        dt.add_column("Database", min_width=16, style="dim")
+        dt.add_column("Email", min_width=20)
+        dt.add_column("Tên thật", min_width=14)
+        dt.add_column("Password / Hash", min_width=20)
+        dt.add_column("Số điện thoại", min_width=12)
+        dt.add_column("Địa chỉ", min_width=14)
+        dt.add_column("IP", width=16)
+        for e in entries[:20]:
+            pw = e.get("password") or ""
+            hp = (e.get("hashed_password") or "")
+            pw_display = pw if pw else (f"[dim]{hp[:28]}…[/dim]" if hp else "—")
+            dt.add_row(
+                (e.get("database_name") or "?")[:20],
+                (e.get("email") or "—")[:30],
+                (e.get("name") or "—")[:16],
+                pw_display,
+                (e.get("phone") or "—")[:14],
+                (e.get("address") or "—")[:20],
+                (e.get("ip_address") or "—")[:16],
+            )
+        console.print(dt)
+        if total > 20:
+            console.print(f"    [dim]... và {total - 20} bản ghi khác[/dim]")
+    else:
+        console.print("    [green]✓ Không tìm thấy[/green]")
+
+    # ⑥ Snusbase — actual breach records
+    sn = data.get("snusbase") or {}
+    console.print("\n  [bold cyan]⑥ Snusbase[/bold cyan] [dim](bản ghi thực tế — $2/tháng)[/dim]")
+    if sn.get("note"):
+        for line in sn["note"].splitlines():
+            console.print(f"    [dim]{line}[/dim]")
+    elif sn.get("error"):
+        console.print(f"    [red]✗ {sn['error']}[/red]")
+    elif sn.get("found"):
+        entries = sn.get("entries") or []
+        total = sn.get("total", len(entries))
+        console.print(f"    [bold red]⚠ {total} bản ghi tìm thấy:[/bold red]")
+        st = Table(show_header=True, header_style="bold red", show_lines=True, padding=(0, 1))
+        st.add_column("Database (table)", min_width=16, style="dim")
+        st.add_column("Email", min_width=22)
+        st.add_column("Username", min_width=14)
+        st.add_column("Password", min_width=18)
+        st.add_column("Hash / type", min_width=16)
+        st.add_column("Tên thật", min_width=14)
+        st.add_column("IP", width=16)
+        for e in entries[:20]:
+            h = (e.get("hash") or "")
+            ht = e.get("hash_type") or ""
+            hash_display = f"{h[:20]}… [{ht}]" if h else "—"
+            st.add_row(
+                (e.get("table") or "?")[:20],
+                (e.get("email") or "—")[:30],
+                (e.get("username") or "—")[:16],
+                (e.get("password") or "—")[:22],
+                hash_display,
+                (e.get("name") or "—")[:16],
+                (e.get("ip") or "—")[:16],
+            )
+        console.print(st)
+        if total > 20:
+            console.print(f"    [dim]... và {total - 20} bản ghi khác[/dim]")
+    else:
+        console.print("    [green]✓ Không tìm thấy[/green]")
+
+    # ⑦ Holehe — sites registered
+    ho = data.get("holehe")
+    if ho is not None:
+        console.print("\n  [bold cyan]⑦ Holehe[/bold cyan] [dim](email đăng ký trên dịch vụ nào — miễn phí)[/dim]")
+        if ho.get("note"):
+            console.print(f"    [dim]{ho['note']}[/dim]")
+        elif ho.get("error"):
+            console.print(f"    [red]✗ {ho['error']}[/red]")
+        else:
+            sites = ho.get("registered_sites") or []
+            checked = ho.get("checked", 0)
+            if sites:
+                console.print(f"    [red]⚠ Tìm thấy trên {len(sites)}/{checked} dịch vụ được kiểm tra:[/red]")
+                ht = Table(show_header=False, box=None, padding=(0, 2))
+                ht.add_column("🌐", style="cyan", min_width=18)
+                ht.add_column("Domain", style="dim")
+                for row in sites:
+                    ht.add_row(row.get("name", "?"), row.get("domain", ""))
+                console.print(ht)
+            else:
+                console.print(f"    [green]✓ Không tìm thấy trên {checked} dịch vụ đã kiểm tra[/green]")
+
+    # ⑧ EmailRep reputation
+    er = data.get("emailrep")
+    if er is not None:
+        console.print("\n  [bold cyan]⑧ EmailRep.io[/bold cyan] [dim](reputation & breach signals — miễn phí)[/dim]")
+        if er.get("error"):
+            console.print(f"    [red]✗ {er['error']}[/red]")
+        else:
+            rep = er.get("reputation") or "unknown"
+            sus = er.get("suspicious")
+            rep_color = "red" if sus else ("yellow" if rep in ("low", "none") else "green")
+            console.print(f"    Reputation : [{rep_color}]{rep}[/{rep_color}]  Suspicious: [{rep_color}]{sus}[/{rep_color}]  References: {er.get('references', 0)}")
+            flags = []
+            if er.get("blacklisted"):       flags.append("[bold red]Blacklisted[/bold red]")
+            if er.get("credentials_leaked"): flags.append("[red]Credentials leaked[/red]")
+            if er.get("data_breach"):        flags.append("[red]Data breach[/red]")
+            if er.get("malicious_activity"): flags.append("[red]Malicious activity[/red]")
+            if flags:
+                console.print("    Flags      : " + "  ".join(flags))
+            if er.get("first_seen"):
+                console.print(f"    Email seen : first {er['first_seen']}  →  last {er.get('last_seen') or '?'}")
+            profiles = er.get("profiles") or []
+            if profiles:
+                console.print(f"    Profiles   : [cyan]{', '.join(profiles[:10])}[/cyan]")
+
+    # ⑨ Hunter.io enrichment
+    hu = data.get("hunter")
+    if hu is not None:
+        console.print("\n  [bold cyan]⑨ Hunter.io[/bold cyan] [dim](enrichment — 25/tháng free)[/dim]")
+        if hu.get("note"):
+            console.print(f"    [dim]{hu['note']}[/dim]")
+        elif hu.get("error"):
+            console.print(f"    [red]✗ {hu['error']}[/red]")
+        elif hu.get("found"):
+            name = " ".join(filter(None, [hu.get("first_name"), hu.get("last_name")])) or "?"
+            console.print(f"    Tên thật   : [bold]{name}[/bold]")
+            if hu.get("position"):    console.print(f"    Chức danh  : {hu['position']}")
+            if hu.get("organization"): console.print(f"    Công ty    : {hu['organization']}")
+            if hu.get("phone_number"): console.print(f"    Điện thoại : [red]{hu['phone_number']}[/red]")
+            if hu.get("linkedin"):     console.print(f"    LinkedIn   : [cyan]{hu['linkedin']}[/cyan]")
+            if hu.get("twitter"):      console.print(f"    Twitter    : [cyan]@{hu['twitter']}[/cyan]")
+            if hu.get("city") or hu.get("country"):
+                console.print(f"    Vị trí     : {hu.get('city', '')} {hu.get('country', '')}")
+        else:
+            console.print("    [dim]Không tìm thấy thông tin enrichment[/dim]")
+
+    # ④ Pwned Passwords
     pwned = data.get("pwned_password")
     if pwned is not None:
-        console.print("\n  [bold cyan]④ HIBP Pwned Passwords[/bold cyan] [dim](mật khẩu — miễn phí)[/dim]")
+        console.print("\n  [bold cyan]⑩ HIBP Pwned Passwords[/bold cyan] [dim](mật khẩu — miễn phí)[/dim]")
         if pwned.get("error"):
             console.print(f"    [red]✗ {pwned['error']}[/red]")
         elif pwned.get("exposed"):
@@ -509,3 +976,4 @@ def print_breach_results(data: dict):
         for d in data["dorks"]:
             console.print(f"    [cyan]{d['label']}:[/cyan]")
             console.print(f"      [dim]{d['url']}[/dim]")
+
