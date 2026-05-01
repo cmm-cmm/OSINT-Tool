@@ -15,9 +15,10 @@ import concurrent.futures
 import requests
 from rich.console import Console
 from rich.table import Table
+from modules.utils import make_session, HEADERS_GENERIC as HEADERS
 
 console = Console()
-HEADERS = {"User-Agent": "OSINT-Tool/1.0 (Educational/Research Purpose)"}
+_session = make_session()
 
 # Common ports to scan for security research
 COMMON_PORTS = [
@@ -308,24 +309,22 @@ def detect_tech_stack(domain: str, existing_headers: dict = None) -> dict:
     # Try to fetch HTML body
     body = ""
     for scheme in ("https", "http"):
-        for verify_ssl in (True, False):
-            try:
-                resp = requests.get(
-                    f"{scheme}://{domain}", headers=HEADERS, timeout=8,
-                    allow_redirects=True, verify=verify_ssl
-                )
-                body = resp.text.lower()[:50000]  # cap at 50KB
-                for h in resp.headers:
-                    headers_lower.setdefault(h.lower(), resp.headers[h].lower())
-                break
-            except requests.exceptions.SSLError:
-                if verify_ssl:
-                    continue
-                break
-            except Exception:
-                break
-        if body:
+        try:
+            resp = requests.get(
+                f"{scheme}://{domain}", headers=HEADERS, timeout=8,
+                allow_redirects=True, verify=True
+            )
+            body = resp.text.lower()[:50000]  # cap at 50KB
+            for h in resp.headers:
+                headers_lower.setdefault(h.lower(), resp.headers[h].lower())
             break
+        except requests.exceptions.SSLError:
+            # Retry over plain HTTP if HTTPS has cert issues
+            continue
+        except Exception:
+            break
+    if body:
+        pass  # already fetched
 
     combined = body + " " + " ".join(headers_lower.values())
 

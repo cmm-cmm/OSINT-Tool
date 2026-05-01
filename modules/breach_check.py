@@ -20,13 +20,10 @@ import hashlib
 import requests
 from rich.console import Console
 from rich.table import Table
+from modules.utils import make_session, HEADERS_GENERIC as _HEADERS
 
 console = Console()
-
-_HEADERS = {
-    "User-Agent": "OSINT-Tool/1.0 (Educational/Research Purpose)",
-    "Accept": "application/json",
-}
+_session = make_session()
 
 
 # ─── ① HIBP Pwned Passwords — hoàn toàn miễn phí, không cần key ──────────
@@ -339,8 +336,14 @@ def check_holehe(email: str) -> dict:
     result = {"registered_sites": [], "checked": 0, "error": None, "note": None}
     try:
         import subprocess, re as _re, sys
+        from modules.utils import sanitize_for_shell
+        try:
+            safe_email = sanitize_for_shell(email)
+        except ValueError as ve:
+            result["error"] = f"Địa chỉ email không hợp lệ để chạy holehe: {ve}"
+            return result
         proc = subprocess.run(
-            [sys.executable, "-m", "holehe", "--no-color", "--only-registered", email],
+            [sys.executable, "-m", "holehe", "--no-color", "--only-registered", safe_email],
             capture_output=True, text=True, timeout=90, encoding="utf-8",
         )
         output = proc.stdout + proc.stderr

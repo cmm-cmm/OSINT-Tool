@@ -240,44 +240,49 @@ def monitor_username(
         f"(Ctrl+C to stop)[/cyan]"
     )
 
-    while time.time() < end:
-        scan_num += 1
-        console.print(f"[dim]Scan #{scan_num} — {datetime.utcnow().strftime('%H:%M:%S')} UTC[/dim]")
-        results = asyncio.run(_search_all(username))
-        snapshot: dict = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "scan": scan_num,
-            "found": [],
-            "changes": [],
-        }
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        while time.time() < end:
+            scan_num += 1
+            console.print(f"[dim]Scan #{scan_num} — {datetime.utcnow().strftime('%H:%M:%S')} UTC[/dim]")
+            results = loop.run_until_complete(_search_all(username))
+            snapshot: dict = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "scan": scan_num,
+                "found": [],
+                "changes": [],
+            }
 
-        for r in results:
-            platform = r["platform"]
-            status = r["status"]
-            snapshot["found"].append({"platform": platform, "status": status, "url": r["url"]})
+            for r in results:
+                platform = r["platform"]
+                status = r["status"]
+                snapshot["found"].append({"platform": platform, "status": status, "url": r["url"]})
 
-            if platform in prev_statuses and prev_statuses[platform] != status:
-                change = {
-                    "platform": platform,
-                    "from": prev_statuses[platform],
-                    "to": status,
-                    "url": r["url"],
-                }
-                snapshot["changes"].append(change)
-                color = "green" if status == "found" else "yellow" if status == "possible" else "red"
-                console.print(
-                    f"  [bold {color}]⚡ CHANGE[/bold {color}] {platform}: "
-                    f"{prev_statuses[platform]} → {status}"
-                )
-                if on_change:
-                    on_change(platform, prev_statuses[platform], status)
+                if platform in prev_statuses and prev_statuses[platform] != status:
+                    change = {
+                        "platform": platform,
+                        "from": prev_statuses[platform],
+                        "to": status,
+                        "url": r["url"],
+                    }
+                    snapshot["changes"].append(change)
+                    color = "green" if status == "found" else "yellow" if status == "possible" else "red"
+                    console.print(
+                        f"  [bold {color}]⚡ CHANGE[/bold {color}] {platform}: "
+                        f"{prev_statuses[platform]} → {status}"
+                    )
+                    if on_change:
+                        on_change(platform, prev_statuses[platform], status)
 
-            prev_statuses[platform] = status
+                prev_statuses[platform] = status
 
-        history.append(snapshot)
+            history.append(snapshot)
 
-        if time.time() < end:
-            time.sleep(interval)
+            if time.time() < end:
+                time.sleep(interval)
+    finally:
+        loop.close()
 
     return history
 
