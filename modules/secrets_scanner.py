@@ -17,15 +17,17 @@ Quét các file nhạy cảm bị lộ trên website:
 Không cần API key — chỉ dùng requests.
 """
 import re
-import warnings
-import urllib3
+import certifi
 import requests
 from rich.console import Console
 from rich.table import Table
 from rich import box
+from modules.utils import make_session, RateLimiter
 
 console = Console()
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; OSINT-Tool/1.0; +Research)"}
+_session = make_session(retries=2, backoff_factor=0.3)
+_rate_limiter = RateLimiter(calls=10, period=1.0)
 TIMEOUT = 8
 
 # Severity levels for findings
@@ -273,10 +275,9 @@ def _probe_path(base_url: str, path: str) -> dict | None:
     """Thử request một path và trả về kết quả nếu accessible."""
     url = f"{base_url.rstrip('/')}/{path}"
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
-            resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT,
-                                allow_redirects=False, verify=False)
+        with _rate_limiter:
+            resp = _session.get(url, headers=HEADERS, timeout=TIMEOUT,
+                                allow_redirects=False, verify=certifi.where())
         # Only flag if actually returns content (not redirect to login)
         if resp.status_code in (200, 206):
             content_len = len(resp.content)
@@ -315,9 +316,8 @@ def _scan_page_for_secrets(url: str) -> list:
     """Tải page source và tìm pattern API key / credential bị lộ."""
     findings = []
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
-            resp = requests.get(url, headers=HEADERS, timeout=12, verify=False)
+        with _rate_limiter:
+            resp = _session.get(url, headers=HEADERS, timeout=12, verify=certifi.where())
         if resp.status_code != 200:
             return findings
         source = resp.text
@@ -415,10 +415,8 @@ def secrets_scan(target: str) -> dict:
     for scheme in ("https", "http"):
         try:
             test_url = f"{scheme}://{target.replace('https://', '').replace('http://', '')}"
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
-                r = requests.head(test_url, headers=HEADERS, timeout=8,
-                                  allow_redirects=True, verify=False)
+            r = _session.head(test_url, headers=HEADERS, timeout=8,
+                              allow_redirects=True, verify=certifi.where())
             if r.status_code < 500:
                 base_url = test_url
                 result["base_url"] = base_url
@@ -495,9 +493,7 @@ def secrets_scan(target: str) -> dict:
 
     # ── Scan linked JS bundles for secrets ───────────────────────────────────
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
-            home_resp = requests.get(base_url, headers=HEADERS, timeout=12, verify=False)
+        home_resp = _session.get(base_url, headers=HEADERS, timeout=12, verify=certifi.where())
         if home_resp.status_code == 200:
             js_urls = _extract_js_urls(base_url, home_resp.text)
             if js_urls:

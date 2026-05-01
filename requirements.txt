@@ -9,3 +9,5 @@ phonenumbers>=8.13.0
 ipwhois>=1.2.0
 bs4>=0.0.2
 lxml>=5.1.0
+# Optional — enables full Instagram recon (engagement, shadowban, account age)
+# instaloader>=4.13

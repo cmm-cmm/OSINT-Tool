@@ -15,12 +15,10 @@ import requests
 import dns.resolver
 from rich.console import Console
 from rich.table import Table
+from modules.utils import make_session, HEADERS_GENERIC as HEADERS
 
 console = Console()
-
-HEADERS = {
-    "User-Agent": "OSINT-Tool/1.0 (Educational/Research Purpose)"
-}
+_session = make_session()
 
 
 def validate_email(email: str) -> bool:
