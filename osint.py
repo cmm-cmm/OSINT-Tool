@@ -36,7 +36,7 @@ from modules.whois_lookup import (
     check_dns_security, print_dns_security,
 )
 from modules.email_recon import email_recon, print_email_results, validate_email
-from modules.username_search import username_search, print_username_results
+from modules.username_search import username_search, print_username_results, monitor_username
 from modules.ip_lookup import ip_lookup, print_ip_results
 from modules.phone_lookup import phone_lookup, print_phone_results
 from modules.google_dorks import generate_dorks, print_dorks
@@ -44,6 +44,7 @@ from modules.report import save_report
 from modules.ssl_analyzer import ssl_analyze, print_ssl_results
 from modules.secrets_scanner import secrets_scan, print_secrets_results
 from modules.cloud_recon import cloud_recon, print_cloud_recon
+from modules.instagram_recon import instagram_recon, print_instagram_results
 
 console = Console()
 
@@ -342,15 +343,27 @@ def cmd_email(email_addr, hibp_key, hunter_key, emailrep_key, do_dorks, report, 
 @click.argument("username")
 @click.option("--report", is_flag=True, help="Save HTML+JSON report")
 @click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
-def cmd_username(username, report, output):
+@click.option("--monitor", is_flag=True, default=False, help="Watch mode: re-scan periodically and alert on status changes")
+@click.option("--interval", default=60, show_default=True, help="Seconds between re-scans in watch mode")
+@click.option("--duration", default=3600, show_default=True, help="Total watch duration in seconds (default: 1 hour)")
+def cmd_username(username, report, output, monitor, interval, duration):
     """Search a username across 40+ platforms.
 
-    Example: python osint.py username johndoe --report
+    \b
+    Examples:
+      python osint.py username johndoe --report
+      python osint.py username johndoe --monitor --interval 120 --duration 7200
     """
     print_banner()
 
-    console.print(f"\n[dim]Searching for @{username} across platforms...[/dim]\n")
+    if monitor:
+        console.print(f"\n[dim]Starting monitor for @{username}...[/dim]\n")
+        history = monitor_username(username, interval=interval, duration=duration)
+        if report:
+            save_report(username, {"monitor_history": history}, output)
+        return
 
+    console.print(f"\n[dim]Searching for @{username} across platforms...[/dim]\n")
     data = username_search(username)
     all_data = {"username": data}
     print_username_results(data)
@@ -384,6 +397,47 @@ def cmd_phone(phone_number, region, numverify_key, report, output, out_fmt):
 
     if report:
         save_report(phone_number, all_data, output)
+
+
+@cli.command("instagram")
+@click.argument("username")
+@click.option("--shadowban", is_flag=True, default=False, help="Run shadowban heuristic check (requires instaloader)")
+@click.option("--engagement", is_flag=True, default=False, help="Estimate engagement rate (requires instaloader)")
+@click.option("--hashtag", default=None, help="Run OSINT on this hashtag (e.g. #python)")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
+@click.option("--output-format", "out_fmt", type=click.Choice(["table", "json"]), default="table")
+def cmd_instagram(username, shadowban, engagement, hashtag, report, output, out_fmt):
+    """Instagram profile OSINT — public data only.
+
+    \b
+    Examples:
+      python osint.py instagram johndoe
+      python osint.py instagram johndoe --engagement --shadowban
+      python osint.py instagram johndoe --hashtag "#python" --report
+      python osint.py instagram johndoe --output-format json
+    """
+    if out_fmt == "table":
+        print_banner()
+
+    username = username.lstrip("@").strip()
+    console.print(f"[dim]Gathering Instagram OSINT for @{username}...[/dim]")
+
+    data = instagram_recon(
+        username,
+        do_shadowban=shadowban,
+        do_engagement=engagement,
+        hashtag=hashtag,
+    )
+    all_data = {"instagram": data}
+
+    if out_fmt == "table":
+        print_instagram_results(data)
+    elif out_fmt == "json":
+        print(json.dumps(all_data, indent=2, ensure_ascii=False, default=str))
+
+    if report:
+        save_report(username, all_data, output)
 
 
 @cli.command("person")

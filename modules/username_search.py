@@ -2,8 +2,16 @@
 Username Search Module
 Checks username availability/existence on popular platforms
 using public profile URLs (no scraping, no auth required).
+
+Extra features:
+- Bot/suspicion score heuristic per result
+- Username monitor (watch mode) — periodically re-scans for status changes
 """
 import asyncio
+import re
+import time
+from datetime import datetime
+
 import aiohttp
 from rich.console import Console
 from rich.table import Table
@@ -154,6 +162,42 @@ async def _search_all(username: str) -> list:
     return results
 
 
+def _score_username(username: str) -> dict:
+    """
+    Heuristic bot/fake suspicion score for a username.
+    Returns score (int), level (low/medium/high), and reasons list.
+    """
+    score = 0
+    reasons = []
+
+    digit_count = sum(c.isdigit() for c in username)
+    if digit_count >= 4:
+        score += 2
+        reasons.append(f"{digit_count} digits")
+    elif digit_count >= 2:
+        score += 1
+        reasons.append(f"{digit_count} digits")
+
+    if len(username) <= 4:
+        score += 1
+        reasons.append("very short")
+
+    if re.search(r'\d{4,}$', username):
+        score += 1
+        reasons.append("ends 4+ digits")
+
+    if re.match(r'^[a-z]{2,8}\d{4,}$', username, re.I):
+        score += 1
+        reasons.append("word+digits pattern")
+
+    if re.search(r'_{2,}', username):
+        score += 1
+        reasons.append("double underscores")
+
+    level = "high" if score >= 4 else "medium" if score >= 2 else "low"
+    return {"score": score, "level": level, "reasons": reasons}
+
+
 def username_search(username: str) -> dict:
     username = username.strip()
     results = asyncio.run(_search_all(username))
@@ -162,6 +206,7 @@ def username_search(username: str) -> dict:
     not_found = [r for r in results if r["status"] == "not_found"]
     return {
         "username": username,
+        "suspicion_score": _score_username(username),
         "found": found,
         "possible": possible,
         "not_found": not_found,
@@ -169,8 +214,88 @@ def username_search(username: str) -> dict:
     }
 
 
+def monitor_username(
+    username: str,
+    interval: int = 60,
+    duration: int = 3600,
+    on_change=None,
+) -> list[dict]:
+    """
+    Watch a username across platforms for ``duration`` seconds,
+    re-scanning every ``interval`` seconds.
+
+    ``on_change`` is an optional callable(platform, old_status, new_status)
+    that is invoked whenever a platform status changes.
+
+    Returns the full scan history as a list of timed snapshots.
+    """
+    username = username.strip()
+    history: list[dict] = []
+    prev_statuses: dict[str, str] = {}
+    end = time.time() + duration
+    scan_num = 0
+
+    console.print(
+        f"[cyan]Monitoring @{username} every {interval}s for {duration//60} min "
+        f"(Ctrl+C to stop)[/cyan]"
+    )
+
+    while time.time() < end:
+        scan_num += 1
+        console.print(f"[dim]Scan #{scan_num} — {datetime.utcnow().strftime('%H:%M:%S')} UTC[/dim]")
+        results = asyncio.run(_search_all(username))
+        snapshot: dict = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "scan": scan_num,
+            "found": [],
+            "changes": [],
+        }
+
+        for r in results:
+            platform = r["platform"]
+            status = r["status"]
+            snapshot["found"].append({"platform": platform, "status": status, "url": r["url"]})
+
+            if platform in prev_statuses and prev_statuses[platform] != status:
+                change = {
+                    "platform": platform,
+                    "from": prev_statuses[platform],
+                    "to": status,
+                    "url": r["url"],
+                }
+                snapshot["changes"].append(change)
+                color = "green" if status == "found" else "yellow" if status == "possible" else "red"
+                console.print(
+                    f"  [bold {color}]⚡ CHANGE[/bold {color}] {platform}: "
+                    f"{prev_statuses[platform]} → {status}"
+                )
+                if on_change:
+                    on_change(platform, prev_statuses[platform], status)
+
+            prev_statuses[platform] = status
+
+        history.append(snapshot)
+
+        if time.time() < end:
+            time.sleep(interval)
+
+    return history
+
+
 def print_username_results(data: dict):
     console.print(f"\n[bold cyan]═══ USERNAME SEARCH: @{data['username']} ═══[/bold cyan]")
+
+    # Suspicion score
+    sc = data.get("suspicion_score", {})
+    if sc:
+        level = sc.get("level", "low")
+        color = {"high": "red", "medium": "yellow", "low": "green"}.get(level, "white")
+        reasons_str = ", ".join(sc.get("reasons", [])) or "none"
+        console.print(
+            f"  Username Risk : [{color}]{level.upper()}[/{color}]"
+            f" (score {sc.get('score', 0)}) — {reasons_str}"
+        )
+
     console.print(f"  Checked {data['total_checked']} platforms | "
                   f"[green]Found: {len(data['found'])}[/green] | "
                   f"[yellow]Possible: {len(data['possible'])}[/yellow] | "
