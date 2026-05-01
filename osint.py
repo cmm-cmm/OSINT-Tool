@@ -823,7 +823,6 @@ def cmd_menu():
 
     while True:
         console.clear()
-        print_banner()
         menu_panel = Panel(
             Align.center(Text.from_markup("[bold cyan]OSINT Interactive Menu[/bold cyan]\n[white]Select an option below to start a scan[/white]")),
             box=box.ROUNDED,
