@@ -9,5 +9,14 @@ phonenumbers>=8.13.0
 ipwhois>=1.2.0
 bs4>=0.0.2
 lxml>=5.1.0
-# Optional — enables full Instagram recon (engagement, shadowban, account age)
-# instaloader>=4.13
+certifi>=2024.0.0
+Pillow>=10.0.0
+exifread>=3.0.0
+geopy>=2.4.0
+
+# ── Optional: enable richer recon features ────────────────────────────────────
+# Uncomment to install. These are detected at runtime with graceful fallback.
+# instaloader>=4.13          # Full Instagram recon
+# holehe>=1.20               # Email → 120+ site registration check
+# maigret>=0.4.4             # Username OSINT across 3000+ sites
+# theHarvester>=4.4.0        # Email/subdomain/IP gathering from public sources

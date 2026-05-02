@@ -6,10 +6,13 @@ Provides:
   - Common request headers
   - Rate-limited request helper
   - Input sanitization helpers
+  - Internet connectivity check
+  - Scan history logging
 """
 import re
 import time
 import logging
+import datetime
 import certifi
 import requests
 from requests.adapters import HTTPAdapter
@@ -149,3 +152,74 @@ def sanitize_for_shell(value: str, max_length: int = 256) -> str:
             f"Value contains unsafe characters for shell invocation: {value!r}"
         )
     return value
+
+
+# ─── Internet connectivity check ─────────────────────────────────────────────
+
+def check_internet(timeout: int = 6) -> bool:
+    """
+    Return True if an outbound HTTPS connection can be made.
+    Tries GitHub first, then Google, then Cloudflare DNS as fallback.
+    Does NOT raise — always returns bool.
+    """
+    test_hosts = [
+        ("github.com", 443),
+        ("www.google.com", 443),
+        ("1.1.1.1", 443),
+    ]
+    import socket
+    for host, port in test_hosts:
+        try:
+            sock = socket.create_connection((host, port), timeout=timeout)
+            sock.close()
+            return True
+        except OSError:
+            continue
+    return False
+
+
+# ─── Scan history logging ─────────────────────────────────────────────────────
+
+def append_scan_history(module_title: str, target: str, status: str = "ok") -> None:
+    """
+    Append a one-line JSON record to ~/.osint-tool/history.jsonl.
+    Fields: timestamp, module, target, status.
+    Silently ignores write errors.
+    """
+    from modules.constants import USER_CONFIG_DIR
+    try:
+        history_file = USER_CONFIG_DIR / "history.jsonl"
+        USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+            "module": module_title,
+            "target": target,
+            "status": status,
+        }
+        import json
+        with open(history_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def read_scan_history(limit: int = 50) -> list[dict]:
+    """Return last `limit` scan records from history.jsonl, newest first."""
+    from modules.constants import USER_CONFIG_DIR
+    import json
+    history_file = USER_CONFIG_DIR / "history.jsonl"
+    if not history_file.exists():
+        return []
+    try:
+        lines = history_file.read_text(encoding="utf-8").splitlines()
+        records = []
+        for line in lines:
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+        return list(reversed(records[-limit:]))
+    except Exception:
+        return []
