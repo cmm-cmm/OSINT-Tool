@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  osint-tool:
+    build: .
+    image: osint-tool:latest
+    container_name: osint-tool
+    stdin_open: true    # -i
+    tty: true           # -t
+    environment:
+      # Pass API keys from host .env file
+      - SHODAN_KEY=${SHODAN_KEY:-}
+      - VIRUSTOTAL_KEY=${VIRUSTOTAL_KEY:-}
+      - ABUSEIPDB_KEY=${ABUSEIPDB_KEY:-}
+      - HUNTER_KEY=${HUNTER_KEY:-}
+      - EMAILREP_KEY=${EMAILREP_KEY:-}
+    volumes:
+      # Persist config and scan history across container restarts
+      - osint_data:/home/osint/.osint-tool
+      # Mount local .env for live key updates without rebuild
+      - ./.env:/opt/osint-tool/.env:ro
+    command: menu
+
+volumes:
+  osint_data:
+    driver: local

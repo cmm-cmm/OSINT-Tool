@@ -11,6 +11,16 @@ Người dùng chịu trách nhiệm tuân thủ luật pháp địa phương.
 """
 
 import sys
+
+# ── Python version gate ────────────────────────────────────────────────────────
+if sys.version_info < (3, 10):
+    print(
+        f"\n[ERROR] Python 3.10 or newer is required.\n"
+        f"  Detected: Python {sys.version_info.major}.{sys.version_info.minor}\n"
+        f"  Install: https://www.python.org/downloads/\n"
+    )
+    sys.exit(1)
+
 import os
 import re
 import json
@@ -45,6 +55,7 @@ from modules.ssl_analyzer import ssl_analyze, print_ssl_results
 from modules.secrets_scanner import secrets_scan, print_secrets_results
 from modules.cloud_recon import cloud_recon, print_cloud_recon
 from modules.instagram_recon import instagram_recon, print_instagram_results
+from modules.cert_transparency import cert_recon, print_cert_results
 
 console = Console()
 
@@ -100,7 +111,7 @@ BANNER = Panel(
     box=box.ROUNDED,
     border_style="bright_blue",
     title="[bold magenta]OSINT[/bold magenta]",
-    subtitle="[green]v1.0.0[/green]",
+    subtitle="[green]v1.2.0[/green]",
     padding=(1, 2),
 )
 
@@ -298,13 +309,15 @@ def _run_domain(target, do_whois, do_dns, do_subdomain, do_dorks, do_ip,
 @click.option("--hunter-key", envvar="HUNTER_KEY", default=None, help="Hunter.io API key (env: HUNTER_KEY)")
 @click.option("--emailrep-key", envvar="EMAILREP_KEY", default=None, help="EmailRep.io key (env: EMAILREP_KEY, optional)")
 @click.option("--dorks/--no-dorks", "do_dorks", default=True, help="Generate email dorks")
+@click.option("--holehe/--no-holehe", "do_holehe", default=False, help="Check email on 120+ sites via holehe (must be installed)")
 @click.option("--report", is_flag=True, help="Save HTML+JSON report")
 @click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
 @click.option("--output-format", "out_fmt", type=click.Choice(["table", "json"]), default="table", help="Output format")
-def cmd_email(email_addr, hibp_key, hunter_key, emailrep_key, do_dorks, report, output, out_fmt):
+def cmd_email(email_addr, hibp_key, hunter_key, emailrep_key, do_dorks, do_holehe, report, output, out_fmt):
     """Investigate an email address.
 
     Example: python osint.py email user@example.com --hibp-key YOUR_KEY
+    Example: python osint.py email user@example.com --holehe
     """
     if not validate_email(email_addr):
         console.print(f"[red]✗ Invalid email format: '{email_addr}'[/red]")
@@ -321,6 +334,7 @@ def cmd_email(email_addr, hibp_key, hunter_key, emailrep_key, do_dorks, report, 
         hibp_api_key=hibp_key,
         hunter_key=hunter_key or os.getenv("HUNTER_KEY"),
         emailrep_key=emailrep_key if emailrep_key is not None else os.getenv("EMAILREP_KEY", ""),
+        do_holehe=do_holehe,
     )
     all_data["email"] = data
     if out_fmt == "table":
@@ -346,13 +360,15 @@ def cmd_email(email_addr, hibp_key, hunter_key, emailrep_key, do_dorks, report, 
 @click.option("--monitor", is_flag=True, default=False, help="Watch mode: re-scan periodically and alert on status changes")
 @click.option("--interval", default=60, show_default=True, help="Seconds between re-scans in watch mode")
 @click.option("--duration", default=3600, show_default=True, help="Total watch duration in seconds (default: 1 hour)")
-def cmd_username(username, report, output, monitor, interval, duration):
+@click.option("--maigret/--no-maigret", "do_maigret", default=False, help="Deep username search via maigret 3000+ sites (must be installed)")
+def cmd_username(username, report, output, monitor, interval, duration, do_maigret):
     """Search a username across 40+ platforms.
 
     \b
     Examples:
       python osint.py username johndoe --report
       python osint.py username johndoe --monitor --interval 120 --duration 7200
+      python osint.py username johndoe --maigret
     """
     print_banner()
 
@@ -366,6 +382,14 @@ def cmd_username(username, report, output, monitor, interval, duration):
     console.print(f"\n[dim]Searching for @{username} across platforms...[/dim]\n")
     data = username_search(username)
     all_data = {"username": data}
+
+    if do_maigret:
+        from modules.username_search import run_maigret
+        console.print("[dim]Running maigret deep scan...[/dim]")
+        maigret_data = run_maigret(username)
+        data["maigret"] = maigret_data
+        all_data["maigret"] = maigret_data
+
     print_username_results(data)
 
     if report:
@@ -799,232 +823,209 @@ def cmd_full(target, target_type, hibp_key, region, output):  # region kept for 
     save_report(target, all_data, output)
 
 
+@cli.command("image")
+@click.argument("image_path")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
+def cmd_image(image_path, report, output):
+    """Extract EXIF metadata and GPS from an image file.
+
+    \b
+    Examples:
+      python osint.py image photo.jpg
+      python osint.py image /path/to/image.jpg --report
+    """
+    from modules.image_recon import analyze_image_metadata, print_image_results
+    print_banner()
+    if not os.path.exists(image_path):
+        console.print(f"[red]✗ File not found: {image_path}[/red]")
+        raise SystemExit(1)
+    console.print(f"[dim]Analyzing image: {image_path}[/dim]")
+    data = analyze_image_metadata(image_path)
+    print_image_results(data)
+    if report:
+        save_report(os.path.basename(image_path), {"image": data}, output)
+
+
+@cli.command("certs")
+@click.argument("domain")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
+def cmd_certs(domain, report, output):
+    """Search Certificate Transparency logs for a domain (crt.sh + certspotter).
+
+    Useful for discovering subdomains via certificate records.
+
+    \b
+    Examples:
+      python osint.py certs example.com
+      python osint.py certs example.com --report
+    """
+    print_banner()
+    domain = _normalize_target(domain)
+    console.print(f"[dim]Searching Certificate Transparency logs for {domain}...[/dim]")
+    data = cert_recon(domain)
+    print_cert_results(data)
+    if report:
+        save_report(domain, {"certs": data}, output)
+
+
+@cli.command("install")
+def cmd_install():
+    """Create a system launcher so you can run 'osint-tool' from anywhere.
+
+    \b
+    Windows: creates osint-tool.bat in the current directory and adds it to
+             the user PATH via the registry (requires no admin rights).
+    Linux/macOS: creates ~/bin/osint-tool shell script (adds ~/bin to PATH
+                 hint if not already there).
+
+    Example: python osint.py install
+    """
+    import shutil
+    root = Path(__file__).resolve().parent
+    python = Path(sys.executable)
+
+    if sys.platform == "win32":
+        # Create a .bat launcher next to osint.py
+        bat = root / "osint-tool.bat"
+        bat.write_text(
+            f'@echo off\n"{python}" "{root / "osint.py"}" %*\n',
+            encoding="utf-8",
+        )
+        # Try to add root dir to user PATH via reg
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["reg", "query", "HKCU\\Environment", "/v", "PATH"],
+                capture_output=True, text=True,
+            )
+            current_path = ""
+            for line in result.stdout.splitlines():
+                if "PATH" in line:
+                    current_path = line.split("    ")[-1].strip()
+                    break
+
+            if str(root) not in current_path:
+                new_path = f"{current_path};{root}" if current_path else str(root)
+                subprocess.run([
+                    "reg", "add", "HKCU\\Environment",
+                    "/v", "PATH", "/t", "REG_EXPAND_SZ",
+                    "/d", new_path, "/f",
+                ], check=True, capture_output=True)
+                console.print(f"[bold green]✔ Added to user PATH:[/bold green] {root}")
+                console.print("[dim]Restart your terminal for PATH to take effect.[/dim]")
+            else:
+                console.print(f"[bold yellow]⚠ Already in PATH:[/bold yellow] {root}")
+        except Exception as e:
+            console.print(f"[bold yellow]⚠ Could not update PATH automatically: {e}[/bold yellow]")
+            console.print(f"[dim]Add manually: {root}[/dim]")
+
+        console.print(f"\n[bold green]✔ Launcher created:[/bold green] {bat}")
+        console.print("[dim]Run from anywhere:[/dim] [bold cyan]osint-tool menu[/bold cyan]")
+
+    else:
+        # Linux / macOS: create ~/bin/osint-tool
+        bin_dir = Path.home() / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        launcher = bin_dir / "osint-tool"
+        launcher.write_text(
+            f'#!/bin/sh\nexec "{python}" "{root / "osint.py"}" "$@"\n'
+        )
+        launcher.chmod(0o755)
+        console.print(f"[bold green]✔ Launcher created:[/bold green] {launcher}")
+
+        # Check ~/bin is in PATH
+        path_env = os.environ.get("PATH", "")
+        if str(bin_dir) not in path_env:
+            shell_rc = Path.home() / (
+                ".zshrc" if shutil.which("zsh") else ".bashrc"
+            )
+            console.print(f"[bold yellow]⚠ {bin_dir} is not in PATH.[/bold yellow]")
+            console.print(f"[dim]Add to {shell_rc}:[/dim]")
+            console.print(f'  [bold cyan]export PATH="$HOME/bin:$PATH"[/bold cyan]')
+        else:
+            console.print("[dim]Run from anywhere:[/dim] [bold cyan]osint-tool menu[/bold cyan]")
+
+
+@cli.command("update")
+def cmd_update():
+    """Self-update: git pull + pip install -r requirements.txt.
+
+    \b
+    Pulls the latest version from GitHub and upgrades all dependencies.
+
+    Example: python osint.py update
+    """
+    import subprocess
+    console.print("[bold cyan]>> Updating OSINT Tool...[/bold cyan]\n")
+    root = Path(__file__).resolve().parent
+
+    # ── Step 1: check for git ──────────────────────────────────────────────────
+    import shutil
+    if not shutil.which("git"):
+        console.print("[bold red]✘ git not found on PATH. Install git and retry.[/bold red]")
+        raise SystemExit(1)
+
+    git_dir = root / ".git"
+    if not git_dir.exists():
+        console.print("[bold yellow]⚠ No .git directory found — not a git clone.[/bold yellow]")
+        console.print("[dim]Download the latest release manually from:[/dim]")
+        console.print("  [underline bright_blue]https://github.com/cmm-cmm/OSINT-Tool/releases[/underline bright_blue]")
+        raise SystemExit(0)
+
+    # ── Step 2: show current version + remote HEAD ────────────────────────────
+    try:
+        local  = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=root).decode().strip()
+        branch = subprocess.check_output(["git", "branch", "--show-current"],     cwd=root).decode().strip()
+        console.print(f"[dim]Branch:[/dim] [cyan]{branch}[/cyan]  "
+                      f"[dim]Current commit:[/dim] [cyan]{local}[/cyan]")
+    except subprocess.CalledProcessError:
+        pass
+
+    # ── Step 3: git pull ───────────────────────────────────────────────────────
+    console.print("\n[bold]Step 1/2[/bold]  [dim]git pull...[/dim]")
+    r = subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=root)
+    if r.returncode != 0:
+        console.print("[bold red]✘ git pull failed. Resolve conflicts and retry.[/bold red]")
+        raise SystemExit(1)
+
+    # ── Step 4: pip upgrade ────────────────────────────────────────────────────
+    req = root / "requirements.txt"
+    console.print("\n[bold]Step 2/2[/bold]  [dim]pip install -r requirements.txt --upgrade...[/dim]")
+    pip = subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "--upgrade", "-r", str(req)])
+    if pip.returncode != 0:
+        console.print("[bold yellow]⚠ Some packages failed to upgrade. Check requirements.txt.[/bold yellow]")
+    else:
+        console.print("[bold green]✔ Dependencies up to date.[/bold green]")
+
+    try:
+        new = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=root).decode().strip()
+        if new != local:
+            console.print(f"\n[bold green]✔ Updated:[/bold green] {local} → {new}")
+        else:
+            console.print("\n[bold green]✔ Already up to date.[/bold green]")
+    except subprocess.CalledProcessError:
+        console.print("\n[bold green]✔ Update complete.[/bold green]")
+
+
 @cli.command("menu")
 def cmd_menu():
-    """Interactive menu mode — guided OSINT investigation.
+    """Interactive TUI menu — full guided OSINT investigation.
+
+    \b
+    Features:
+      - 2-column module grid with system info header
+      - Dependency status indicators ✔/✘ per module
+      - Search: /keyword  |  Tag filter: t tag
+      - External Tools Manager (install/update/run optional tools)
+      - Config viewer/editor
+      - Inline help: ?
 
     Example: python osint.py menu
     """
-    from rich.table import Table as RTable
-
-    MENU_ITEMS = [
-        ("1",  "Domain / IP Investigation",                      "domain"),
-        ("2",  "Email Reconnaissance",                           "email"),
-        ("3",  "Username Search (40+ platforms)",                "username"),
-        ("4",  "Phone Number Analysis",                          "phone"),
-        ("5",  "Person / Organization Dorks",                    "person"),
-        ("6",  "Social Media Recon (FB / TikTok / IG / Twitter / Reddit)", "social"),
-        ("7",  "Website Contacts Scraper",                       "contacts"),
-        ("8",  "YouTube Channel Recon",                          "youtube"),
-        ("9",  "Breach / Data Leak Check",                       "breach"),
-        ("10", "Full Scan + Report",                             "full"),
-        ("0",  "Exit",                                           None),
-    ]
-
-    while True:
-        console.clear()
-        menu_panel = Panel(
-            Align.center(Text.from_markup("[bold cyan]OSINT Interactive Menu[/bold cyan]\n[white]Select an option below to start a scan[/white]")),
-            box=box.ROUNDED,
-            border_style="bright_blue",
-            title="[bold magenta]OSINT Tool[/bold magenta]",
-            subtitle="[green]Interactive mode[/green]",
-            padding=(1, 2),
-        )
-        console.print(menu_panel)
-
-        menu_table = RTable(show_header=False, box=box.SIMPLE_HEAVY, padding=(0, 2))
-        menu_table.add_column("Key", style="bold cyan", width=4)
-        menu_table.add_column("Option", style="white")
-        for key, label, _ in MENU_ITEMS:
-            menu_table.add_row(f"[{key}]", label)
-
-        console.print(menu_table)
-
-        choice = Prompt.ask("\n[bold]Select[/bold]", choices=[m[0] for m in MENU_ITEMS], default="0", show_choices=True)
-        if choice == "0":
-            console.print("[dim]Goodbye.[/dim]")
-            break
-
-        _, label, mode = next(m for m in MENU_ITEMS if m[0] == choice)
-        console.print(
-            Panel(
-                Text(label, style="bold white"),
-                box=box.ROUNDED,
-                border_style="cyan",
-                expand=False,
-            )
-        )
-
-        output_dir = os.getenv("OSINT_OUTPUT_DIR", ".")
-        do_report = Confirm.ask("Save report?", default=False)
-        hibp_key = os.getenv("HIBP_API_KEY") or None
-
-        if mode == "domain":
-            target = Prompt.ask("Domain or IP (or URL)")
-            target = _normalize_target(target)
-            if not _is_valid_target(target):
-                console.print(f"[red]✗ Invalid: '{target}'[/red]")
-                continue
-            _run_domain(target, True, True, True, True, True, do_report, output_dir)
-
-        elif mode == "email":
-            addr = Prompt.ask("Email address")
-            if not validate_email(addr):
-                console.print("[red]✗ Invalid email format[/red]")
-                continue
-            data = email_recon(
-                addr,
-                hibp_api_key=hibp_key,
-                hunter_key=os.getenv("HUNTER_KEY"),
-                emailrep_key=os.getenv("EMAILREP_KEY", ""),
-            )
-            print_email_results(data)
-            dorks = generate_dorks(addr, "email")
-            all_data = {"email": data, "dorks": dorks}
-            print_dorks(addr, "email")
-            if do_report:
-                save_report(addr, all_data, output_dir)
-
-        elif mode == "username":
-            uname = Prompt.ask("Username")
-            console.print(f"\n[dim]Scanning {len(__import__('modules.username_search', fromlist=['PLATFORMS']).PLATFORMS)} platforms...[/dim]\n")
-            data = username_search(uname)
-            all_data = {"username": data}
-            print_username_results(data)
-            if do_report:
-                save_report(uname, all_data, output_dir)
-
-        elif mode == "phone":
-            num = Prompt.ask("Phone number (e.g. 0901234567 or +84901234567)")
-            data = phone_lookup(num, numverify_key=os.getenv("NUMVERIFY_KEY"))
-            print_phone_results(data)
-            if do_report:
-                save_report(num, {"phone": data}, output_dir)
-
-        elif mode == "person":
-            name = Prompt.ask("Full name or organization")
-            dorks = generate_dorks(name, "person")
-            print_dorks(name, "person")
-            all_data = {"dorks": dorks}
-            if do_report:
-                save_report(name, all_data, output_dir)
-
-        elif mode == "social":
-            from modules.social_recon import (
-                facebook_recon, tiktok_recon, print_facebook_results, print_tiktok_results,
-                instagram_recon, print_instagram_results, twitter_recon, print_twitter_results,
-                reddit_recon, print_reddit_results,
-            )
-            fb_id = Prompt.ask("Facebook username / URL / numeric ID (leave blank to skip)", default="")
-            tt_user = Prompt.ask("TikTok username (leave blank to skip)", default="")
-            ig_user = Prompt.ask("Instagram username (leave blank to skip)", default="")
-            tw_user = Prompt.ask("Twitter/X username (leave blank to skip)", default="")
-            reddit_user = Prompt.ask("Reddit username (leave blank to skip)", default="")
-            if not fb_id and not tt_user and not ig_user and not tw_user and not reddit_user:
-                console.print("[red]✗ At least one platform is required[/red]")
-                continue
-            all_data = {}
-            if fb_id:
-                console.print("[dim]Fetching Facebook profile...[/dim]")
-                fb_data = facebook_recon(
-                    fb_id,
-                    fb_scraper_key=os.getenv("FACEBOOK_SCRAPER_KEY"),
-                    hibp_key=os.getenv("HIBP_API_KEY"),
-                    breachdir_key=os.getenv("BREACHDIRECTORY_KEY"),
-                    intelx_key=os.getenv("INTELX_KEY"),
-                    dehashed_email=os.getenv("DEHASHED_EMAIL"),
-                    dehashed_key=os.getenv("DEHASHED_KEY"),
-                    snusbase_key=os.getenv("SNUSBASE_KEY"),
-                    emailrep_key=os.getenv("EMAILREP_KEY"),
-                    hunter_key=os.getenv("HUNTER_KEY"),
-                )
-                all_data["facebook"] = fb_data
-                print_facebook_results(fb_data)
-            if tt_user:
-                console.print("[dim]Fetching TikTok profile...[/dim]")
-                tt_data = tiktok_recon(
-                    tt_user,
-                    tokapi_key=os.getenv("TOKAPI_KEY"),
-                    tiktok_api_key=os.getenv("TIKTOK_API_KEY"),
-                )
-                all_data["tiktok"] = tt_data
-                print_tiktok_results(tt_data)
-            if ig_user:
-                console.print("[dim]Fetching Instagram profile...[/dim]")
-                ig_data = instagram_recon(ig_user, api_key=os.getenv("INSTAGRAM_KEY"))
-                all_data["instagram"] = ig_data
-                print_instagram_results(ig_data)
-            if tw_user:
-                console.print("[dim]Fetching Twitter/X profile...[/dim]")
-                tw_data = twitter_recon(tw_user, bearer_token=os.getenv("TWITTER_BEARER_TOKEN"))
-                all_data["twitter"] = tw_data
-                print_twitter_results(tw_data)
-            if reddit_user:
-                console.print("[dim]Fetching Reddit profile...[/dim]")
-                reddit_data = reddit_recon(reddit_user)
-                all_data["reddit"] = reddit_data
-                print_reddit_results(reddit_data)
-            if do_report:
-                save_report(fb_id or tt_user or ig_user or tw_user or reddit_user, all_data, output_dir)
-
-        elif mode == "contacts":
-            from modules.website_contacts import website_contacts_scrape, print_website_contacts
-            site_url = Prompt.ask("Website URL or domain (e.g. shopee.vn or https://example.com)")
-            console.print("[dim]Scraping website contacts...[/dim]")
-            contacts_data = website_contacts_scrape(site_url, api_key=os.getenv("WEBSITE_CONTACTS_KEY"))
-            print_website_contacts(contacts_data)
-            if do_report:
-                save_report(site_url, {"website_contacts": contacts_data}, output_dir)
-
-        elif mode == "youtube":
-            from modules.youtube_recon import youtube_recon, print_youtube_results
-            channel = Prompt.ask("YouTube handle, channel ID, or URL")
-            console.print("[dim]Fetching YouTube channel...[/dim]")
-            yt_data = youtube_recon(channel, youtube_v2_key=os.getenv("YOUTUBE_V2_KEY"))
-            print_youtube_results(yt_data)
-            if do_report:
-                save_report(channel, {"youtube": yt_data}, output_dir)
-
-        elif mode == "breach":
-            from modules.breach_check import breach_check, print_breach_results
-            tgt = Prompt.ask("Email hoặc username cần kiểm tra")
-            check_pw = Confirm.ask("Kiểm tra mật khẩu qua HIBP Pwned Passwords?", default=False)
-            pw = None
-            if check_pw:
-                import getpass
-                pw = getpass.getpass("  Nhập mật khẩu (không hiển thị): ")
-            bd_key = os.getenv("BREACHDIRECTORY_KEY") or None
-            console.print("[dim]Đang kiểm tra các nguồn rò rỉ dữ liệu...[/dim]")
-            br_data = breach_check(
-                tgt, password=pw, hibp_key=hibp_key, breachdir_key=bd_key,
-                dehashed_email=os.getenv("DEHASHED_EMAIL"),
-                dehashed_key=os.getenv("DEHASHED_KEY"),
-                snusbase_key=os.getenv("SNUSBASE_KEY"),
-                emailrep_key=os.getenv("EMAILREP_KEY"),
-                hunter_key=os.getenv("HUNTER_KEY"),
-            )
-            print_breach_results(br_data)
-            if do_report:
-                save_report(tgt, {"breach": br_data}, output_dir)
-
-        elif mode == "full":
-            target = Prompt.ask("Target")
-            ttype = Prompt.ask(
-                "Type",
-                choices=["domain", "email", "username", "phone", "person"],
-                default="domain",
-            )
-            # Reuse full command logic
-            from click.testing import CliRunner
-            args = [target, "--type", ttype, "--output", output_dir]
-            if hibp_key:
-                args += ["--hibp-key", hibp_key]
-            CliRunner(mix_stderr=False).invoke(cmd_full, args, catch_exceptions=False)
-
-        if not Confirm.ask("\nContinue?", default=True):
-            console.print("[dim]Goodbye.[/dim]")
-            break
+    from modules.tui import run_tui
+    run_tui()
 
 
 if __name__ == "__main__":

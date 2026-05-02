@@ -239,7 +239,49 @@ def generate_search_links(email: str) -> dict:
     }
 
 
-def email_recon(email: str, hibp_api_key: str = None, hunter_key: str = None, emailrep_key: str = None) -> dict:
+import shutil
+import subprocess
+import json as _json
+
+
+def check_holehe(email: str, timeout: int = 60) -> dict:
+    """
+    Run holehe to check email registration on 120+ sites.
+    Returns graceful error dict if holehe is not installed.
+    """
+    result = {"available": False, "sites_found": [], "sites_checked": 0, "error": None, "note": None}
+
+    if not shutil.which("holehe"):
+        result["note"] = "holehe not installed. Run: pip install holehe"
+        return result
+
+    result["available"] = True
+    try:
+        proc = subprocess.run(
+            ["holehe", "--only-used", "--no-color", email],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        output = proc.stdout + proc.stderr
+        # Parse holehe output: lines with [+] indicate found
+        found = []
+        checked = 0
+        for line in output.splitlines():
+            line = line.strip()
+            if "[+]" in line:
+                site = line.replace("[+]", "").strip().split()[0] if line.replace("[+]", "").strip() else "Unknown"
+                found.append(site)
+            if "[-]" in line or "[+]" in line or "[x]" in line:
+                checked += 1
+        result["sites_found"] = found
+        result["sites_checked"] = checked
+    except subprocess.TimeoutExpired:
+        result["error"] = f"holehe timed out after {timeout}s"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+def email_recon(email: str, hibp_api_key: str = None, hunter_key: str = None, emailrep_key: str = None, do_holehe: bool = False) -> dict:
     if not validate_email(email):
         return {"error": "Invalid email format"}
 
@@ -270,6 +312,9 @@ def email_recon(email: str, hibp_api_key: str = None, hunter_key: str = None, em
 
     if emailrep_key is not None:  # allow empty string → unauthenticated request
         result["emailrep"] = check_emailrep(email, emailrep_key or None)
+
+    if do_holehe:
+        result["holehe"] = check_holehe(email)
 
     return result
 
@@ -399,4 +444,24 @@ def print_email_results(data: dict):
         console.print(f"\n  [bold]Username Pivot — '{data.get('username', '')}' trên các nền tảng:[/bold]")
         for p in pivot:
             console.print(f"    {p['platform']:16}: [cyan]{p['url']}[/cyan]")
+
+    # Holehe results
+    holehe = data.get("holehe")
+    if holehe is not None:
+        if holehe.get("note"):
+            console.print(f"\n  [yellow]Holehe: {holehe['note']}[/yellow]")
+        elif holehe.get("error"):
+            console.print(f"\n  [red]Holehe error: {holehe['error']}[/red]")
+        elif holehe.get("available"):
+            found_sites = holehe.get("sites_found", [])
+            checked = holehe.get("sites_checked", 0)
+            console.print(f"\n  [bold]Holehe:[/bold] checked {checked} sites")
+            if found_sites:
+                table = Table(show_header=True, header_style="bold green", title=f"✓ Email registered on {len(found_sites)} site(s)")
+                table.add_column("Site", style="green")
+                for site in found_sites:
+                    table.add_row(site)
+                console.print(table)
+            else:
+                console.print("  Holehe: [dim]No registrations found[/dim]")
 

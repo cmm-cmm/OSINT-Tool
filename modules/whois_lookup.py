@@ -803,3 +803,72 @@ def print_dns_security(data: dict):
         for i, rec in enumerate(recommendations, 1):
             console.print(f"    {i}. {rec}")
 
+
+# ─── External Tool Wrappers ───────────────────────────────────────────────────
+
+import shutil as _shutil
+import subprocess as _subprocess
+import json as _json
+import tempfile as _tempfile
+import os as _os
+
+
+def run_theharvester(domain: str, sources: str = "all", timeout: int = 60) -> dict:
+    """Run theHarvester to gather emails, subdomains, IPs from public sources."""
+    result = {"available": False, "emails": [], "subdomains": [], "ips": [], "error": None, "note": None}
+    if not _shutil.which("theHarvester"):
+        result["note"] = "theHarvester not installed. Run: pip install theHarvester"
+        return result
+    result["available"] = True
+    with _tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+        tmpfile = tf.name
+    try:
+        _subprocess.run(
+            ["theHarvester", "-d", domain, "-b", sources, "-f", tmpfile.replace(".json", "")],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if _os.path.exists(tmpfile):
+            data = _json.loads(open(tmpfile).read())
+            result["emails"]     = data.get("emails", [])
+            result["subdomains"] = data.get("hosts", [])
+            result["ips"]        = data.get("ips", [])
+    except _subprocess.TimeoutExpired:
+        result["error"] = f"theHarvester timed out after {timeout}s"
+    except Exception as e:
+        result["error"] = str(e)
+    finally:
+        try:
+            _os.unlink(tmpfile)
+        except Exception:
+            pass
+    return result
+
+
+def run_subfinder(domain: str, timeout: int = 60) -> dict:
+    """Run subfinder for passive subdomain enumeration."""
+    result = {"available": False, "subdomains": [], "error": None, "note": None}
+    if not _shutil.which("subfinder"):
+        result["note"] = "subfinder not installed. See: https://github.com/projectdiscovery/subfinder"
+        return result
+    result["available"] = True
+    try:
+        proc = _subprocess.run(
+            ["subfinder", "-d", domain, "-silent", "-json"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        subdomains = []
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    obj = _json.loads(line)
+                    subdomains.append(obj.get("host", line))
+                except _json.JSONDecodeError:
+                    subdomains.append(line)
+        result["subdomains"] = list(set(subdomains))
+    except _subprocess.TimeoutExpired:
+        result["error"] = f"subfinder timed out after {timeout}s"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+

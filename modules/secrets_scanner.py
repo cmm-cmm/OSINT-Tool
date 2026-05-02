@@ -625,3 +625,118 @@ def print_secrets_results(data: dict):
                 masked = val[:4] + "***"
             tbl.add_row(s["type"], masked)
         console.print(tbl)
+
+
+# ─── Git Repo Secret Scanners ─────────────────────────────────────────────────
+
+import shutil as _shutil
+import subprocess as _subprocess
+import json as _json
+
+
+def scan_git_repo_trufflehog(repo_url: str, timeout: int = 120) -> dict:
+    """
+    Use TruffleHog to scan a git repo for leaked secrets.
+    repo_url: GitHub/GitLab HTTPS URL like https://github.com/org/repo
+    """
+    result = {"available": False, "findings": [], "error": None, "note": None, "tool": "trufflehog"}
+    if not _shutil.which("trufflehog"):
+        result["note"] = "trufflehog not installed. Run: pip install trufflehog"
+        return result
+    result["available"] = True
+    try:
+        proc = _subprocess.run(
+            ["trufflehog", "git", repo_url, "--json", "--no-update"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    finding = _json.loads(line)
+                    result["findings"].append({
+                        "detector":    finding.get("DetectorName", "Unknown"),
+                        "verified":    finding.get("Verified", False),
+                        "raw":         finding.get("Raw", "")[:100],
+                        "source_file": finding.get("SourceMetadata", {}).get("Data", {}).get("Git", {}).get("file", ""),
+                        "commit":      finding.get("SourceMetadata", {}).get("Data", {}).get("Git", {}).get("commit", ""),
+                    })
+                except _json.JSONDecodeError:
+                    pass
+    except _subprocess.TimeoutExpired:
+        result["error"] = f"trufflehog timed out after {timeout}s"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+def scan_git_repo_gitleaks(repo_path: str, timeout: int = 60) -> dict:
+    """
+    Use Gitleaks to scan a local git repo for secrets.
+    repo_path: local filesystem path to a git repository.
+    """
+    result = {"available": False, "findings": [], "error": None, "note": None, "tool": "gitleaks"}
+    if not _shutil.which("gitleaks"):
+        result["note"] = "gitleaks not installed. See: https://github.com/gitleaks/gitleaks"
+        return result
+    result["available"] = True
+    try:
+        proc = _subprocess.run(
+            ["gitleaks", "detect", "--source", repo_path, "--report-format", "json", "--no-banner"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if proc.stdout.strip():
+            try:
+                findings_raw = _json.loads(proc.stdout)
+                for f in (findings_raw if isinstance(findings_raw, list) else []):
+                    result["findings"].append({
+                        "rule":           f.get("RuleID", "Unknown"),
+                        "file":           f.get("File", ""),
+                        "line":           f.get("StartLine", 0),
+                        "secret_snippet": (f.get("Secret", "") or "")[:50] + "...",
+                        "commit":         f.get("Commit", ""),
+                        "author":         f.get("Author", ""),
+                    })
+            except _json.JSONDecodeError:
+                pass
+    except _subprocess.TimeoutExpired:
+        result["error"] = f"gitleaks timed out after {timeout}s"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+def print_git_secrets_results(data: dict):
+    """Print TruffleHog or Gitleaks results with rich formatting."""
+    from rich.panel import Panel as _Panel
+    tool = data.get("tool", "unknown")
+    if not data.get("available"):
+        console.print(f"[yellow]⚠ {tool}: {data.get('note', 'not available')}[/yellow]")
+        return
+    if data.get("error"):
+        console.print(f"[red]✗ {tool} error: {data['error']}[/red]")
+        return
+    findings = data.get("findings", [])
+    if not findings:
+        console.print(f"[green]✓ {tool}: No secrets found[/green]")
+        return
+
+    console.print(_Panel(f"[bold red]⚠ {tool}: {len(findings)} secret(s) found![/bold red]", border_style="red"))
+    table = Table(box=box.SIMPLE_HEAVY, show_lines=True)
+    if tool == "trufflehog":
+        table.add_column("Detector", style="red bold")
+        table.add_column("Verified", style="bold")
+        table.add_column("File", style="cyan")
+        table.add_column("Snippet", style="dim")
+        for f in findings[:20]:
+            v = "[green]YES[/green]" if f.get("verified") else "[dim]no[/dim]"
+            table.add_row(f.get("detector", "?"), v, f.get("source_file", "?"), f.get("raw", "")[:60])
+    else:
+        table.add_column("Rule", style="red bold")
+        table.add_column("File", style="cyan")
+        table.add_column("Line")
+        table.add_column("Author", style="dim")
+        for f in findings[:20]:
+            table.add_row(f.get("rule", "?"), f.get("file", "?"), str(f.get("line", "")), f.get("author", "?"))
+    console.print(table)
+

@@ -198,6 +198,60 @@ def _score_username(username: str) -> dict:
     return {"score": score, "level": level, "reasons": reasons}
 
 
+import shutil
+import subprocess
+import tempfile
+import os as _os
+import json as _json
+
+
+def run_maigret(username: str, timeout: int = 120) -> dict:
+    """
+    Run maigret for deep username OSINT across 3000+ sites.
+    Returns graceful error dict if maigret is not installed.
+    """
+    result = {"available": False, "sites_found": [], "sites_checked": 0, "error": None, "note": None, "report_path": None}
+
+    if not shutil.which("maigret"):
+        result["note"] = "maigret not installed. Run: pip install maigret"
+        return result
+
+    result["available"] = True
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            proc = subprocess.run(
+                ["maigret", username, "--json", "--folderoutput", tmpdir, "--no-color"],
+                capture_output=True, text=True, timeout=timeout,
+            )
+            # Find the JSON report
+            for fname in _os.listdir(tmpdir):
+                if fname.endswith(".json"):
+                    fpath = _os.path.join(tmpdir, fname)
+                    try:
+                        report = _json.loads(open(fpath).read())
+                        # maigret JSON: {username: {site_name: {status, url_user, ...}}}
+                        sites = report.get(username, {})
+                        found = []
+                        checked = len(sites)
+                        for site_name, info in sites.items():
+                            if info.get("status", {}).get("id") == "FOUND" or info.get("status") == "Claimed":
+                                found.append({
+                                    "site": site_name,
+                                    "url": info.get("url_user", ""),
+                                    "tags": info.get("tags", []),
+                                })
+                        result["sites_found"] = found
+                        result["sites_checked"] = checked
+                    except Exception:
+                        pass
+                    break
+        except subprocess.TimeoutExpired:
+            result["error"] = f"maigret timed out after {timeout}s"
+        except Exception as e:
+            result["error"] = str(e)
+    return result
+
+
 def username_search(username: str) -> dict:
     username = username.strip()
     results = asyncio.run(_search_all(username))
@@ -321,3 +375,24 @@ def print_username_results(data: dict):
         for r in sorted(data["possible"], key=lambda x: x["platform"]):
             table.add_row(r["platform"], r["url"])
         console.print(table)
+
+    # Maigret deep-scan results (if present)
+    maigret = data.get("maigret")
+    if maigret is not None:
+        if maigret.get("note"):
+            console.print(f"\n  [yellow]Maigret: {maigret['note']}[/yellow]")
+        elif maigret.get("error"):
+            console.print(f"\n  [red]Maigret error: {maigret['error']}[/red]")
+        elif maigret.get("available"):
+            found_sites = maigret.get("sites_found", [])
+            checked = maigret.get("sites_checked", 0)
+            console.print(f"\n  [bold]Maigret deep scan:[/bold] checked {checked} sites")
+            if found_sites:
+                mg_table = Table(show_header=True, header_style="bold green", title=f"✓ Maigret: {len(found_sites)} profile(s) found")
+                mg_table.add_column("Site", style="green", width=20)
+                mg_table.add_column("URL", style="cyan")
+                for s in found_sites:
+                    mg_table.add_row(s.get("site", "?"), s.get("url", ""))
+                console.print(mg_table)
+            else:
+                console.print("  Maigret: [dim]No profiles found[/dim]")
