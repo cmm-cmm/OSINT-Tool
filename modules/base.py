@@ -781,12 +781,364 @@ class DorksModule(OsintModule):
         print_dorks(target, kind)
 
 
+class SocialFootprintModule(OsintModule):
+    TITLE = "Social Footprint Search"
+    DESCRIPTION = (
+        "Search username mentions across social platforms via DuckDuckGo.\n"
+        "Modes: platform-specific, limited (URL-only), two-person association."
+    )
+    TAGS = ["username", "social", "duckduckgo", "footprint", "osint", "recon"]
+    ICON = "🌐"
+    OPTIONAL_DEPS = ["ddgs"]
+
+    # Platform menu entries: (display label, platform keyword)
+    _PLATFORM_MENU: list[tuple[str, str]] = [
+        ("Instagram",  "instagram"),
+        ("TikTok",     "tiktok"),
+        ("X (Twitter)","twitter"),
+        ("GitHub",     "github"),
+        ("Facebook",   "facebook"),
+        ("LinkedIn",   "linkedin"),
+        ("YouTube",    "youtube"),
+        ("Reddit",     "reddit"),
+        ("Pinterest",  "pinterest"),
+        ("Snapchat",   "snapchat"),
+    ]
+
+    def _ask_platform(self) -> str | None:
+        """Show platform menu and return platform keyword, or None to abort."""
+        console.print()
+        for i, (label, _) in enumerate(self._PLATFORM_MENU, 1):
+            console.print(f"  [{THEME_ACCENT}]{i:>2}[/{THEME_ACCENT}]  {label}")
+        console.print(f"  [{THEME_ACCENT}]11[/{THEME_ACCENT}]  Custom domain")
+        console.print(f"  [{THEME_ACCENT}]12[/{THEME_ACCENT}]  All Internet")
+        console.print()
+
+        choice = Prompt.ask("[bold cyan]Platform[/bold cyan]", default="12").strip()
+
+        if choice.isdigit():
+            idx = int(choice)
+            if 1 <= idx <= len(self._PLATFORM_MENU):
+                return self._PLATFORM_MENU[idx - 1][1]
+            if idx == 11:
+                custom = Prompt.ask("[bold cyan]Custom domain[/bold cyan] (e.g. example.com)").strip()
+                return custom or None
+            if idx == 12:
+                return "all"
+        console.print(f"[{THEME_WARNING}]Invalid choice, using All Internet.[/{THEME_WARNING}]")
+        return "all"
+
+    def run_interactive(self) -> None:
+        from modules.social_footprint import (
+            footprint_search, association_search,
+            print_footprint_results, print_association_results,
+        )
+        from modules.report import save_report
+        from config import get_output_dir
+
+        self.show_info()
+
+        # Mode selection
+        console.print(f"  [{THEME_ACCENT}]1[/{THEME_ACCENT}]  Single username search")
+        console.print(f"  [{THEME_ACCENT}]2[/{THEME_ACCENT}]  Limited search  (only URLs containing the username)")
+        console.print(f"  [{THEME_ACCENT}]3[/{THEME_ACCENT}]  Two-person association  (detect connections between 2 users)")
+        console.print()
+        mode = Prompt.ask("[bold cyan]Mode[/bold cyan]", default="1").strip()
+
+        if mode == "3":
+            # Association mode
+            u1 = Prompt.ask("[bold cyan]Username 1[/bold cyan]").strip().lstrip("@")
+            u2 = Prompt.ask("[bold cyan]Username 2[/bold cyan]").strip().lstrip("@")
+            if not u1 or not u2:
+                console.print(f"[{THEME_ERROR}]✗ Both usernames are required.[/{THEME_ERROR}]")
+                return
+
+            console.print("\n[dim]Select platform to search:[/dim]")
+            platform = self._ask_platform()
+            if platform is None:
+                return
+
+            limit_str = Prompt.ask("[dim]Max results[/dim]", default="10")
+            limit = int(limit_str) if limit_str.isdigit() else 10
+            do_report = Prompt.ask("[dim]Save report? (y/N)[/dim]", default="n").lower().startswith("y")
+
+            console.print(f"\n[dim]Searching for association between @{u1} and @{u2}...[/dim]")
+            data = association_search(u1, u2, platform=platform, limit=limit)
+            print_association_results(data)
+
+            if do_report:
+                save_report(f"{u1}+{u2}", {"association": data}, str(get_output_dir()))
+                console.print(f"[{THEME_SUCCESS}]✔ Report saved to {get_output_dir()}[/{THEME_SUCCESS}]")
+
+        else:
+            # Single / Limited mode
+            limited = (mode == "2")
+            username = Prompt.ask("[bold cyan]Username[/bold cyan]").strip().lstrip("@")
+            if not username:
+                return
+
+            console.print("\n[dim]Select platform to search:[/dim]")
+            platform = self._ask_platform()
+            if platform is None:
+                return
+
+            limit_str = Prompt.ask("[dim]Max results[/dim]", default="10")
+            limit = int(limit_str) if limit_str.isdigit() else 10
+            do_report = Prompt.ask("[dim]Save report? (y/N)[/dim]", default="n").lower().startswith("y")
+
+            mode_label = "limited" if limited else "standard"
+            console.print(f"\n[dim]Searching @{username} ({mode_label} mode)...[/dim]")
+            data = footprint_search(username, platform=platform, limit=limit, limited=limited)
+            print_footprint_results(data)
+
+            if do_report:
+                save_report(username, {"social_footprint": data}, str(get_output_dir()))
+                console.print(f"[{THEME_SUCCESS}]✔ Report saved to {get_output_dir()}[/{THEME_SUCCESS}]")
+
+
+class DorkerSearchModule(OsintModule):
+    TITLE = "Dork Executor (Amera)"
+    DESCRIPTION = (
+        "Execute Google dork queries via DuckDuckGo and retrieve live results.\n"
+        "Modes: file discovery, email harvest, phone harvest, page discovery, "
+        "person OSINT, custom dork."
+    )
+    TAGS = ["dorks", "google", "files", "emails", "phones", "person", "osint", "recon"]
+    ICON = "🕵️"
+    OPTIONAL_DEPS = ["ddgs"]
+
+    def run_interactive(self) -> None:
+        from modules.dorker_search import (
+            file_search, email_harvest, phone_harvest,
+            page_search, person_search, custom_dork,
+            print_file_results, print_email_results, print_phone_results,
+            print_page_results, print_person_results, print_custom_dork_results,
+        )
+        from modules.report import save_report
+        from config import get_output_dir
+
+        self.show_info()
+
+        console.print(f"  [{THEME_ACCENT}]1[/{THEME_ACCENT}]  File Discovery  — find exposed files on a domain")
+        console.print(f"  [{THEME_ACCENT}]2[/{THEME_ACCENT}]  Email Harvest   — find email addresses on a domain")
+        console.print(f"  [{THEME_ACCENT}]3[/{THEME_ACCENT}]  Phone Harvest   — find phone numbers on a domain")
+        console.print(f"  [{THEME_ACCENT}]4[/{THEME_ACCENT}]  Page Discovery  — find admin/login/backup pages")
+        console.print(f"  [{THEME_ACCENT}]5[/{THEME_ACCENT}]  Person Search   — OSINT on a person by name")
+        console.print(f"  [{THEME_ACCENT}]6[/{THEME_ACCENT}]  Custom Dork     — execute any dork query")
+        console.print()
+
+        mode = Prompt.ask("[bold cyan]Mode[/bold cyan]", default="1").strip()
+        all_data: dict = {}
+
+        if mode == "1":
+            domain = Prompt.ask("[bold cyan]Domain[/bold cyan] (e.g. example.com)").strip()
+            if not domain:
+                return
+            raw_ft = Prompt.ask("[dim]File types (comma-separated, blank for defaults)[/dim]", default="").strip()
+            ft_list = [f.strip() for f in raw_ft.split(",") if f.strip()] or None
+            limit = int(Prompt.ask("[dim]Results per type[/dim]", default="5").strip() or "5")
+            do_report = Prompt.ask("[dim]Save report? (y/N)[/dim]", default="n").lower().startswith("y")
+            console.print("\n[dim]Discovering exposed files...[/dim]")
+            data = file_search(domain, filetypes=ft_list, limit_per_type=limit)
+            all_data["file_discovery"] = data
+            print_file_results(data)
+            if do_report:
+                save_report(domain, all_data, str(get_output_dir()))
+
+        elif mode == "2":
+            domain = Prompt.ask("[bold cyan]Domain[/bold cyan] (e.g. example.com)").strip()
+            if not domain:
+                return
+            limit = int(Prompt.ask("[dim]Results per provider[/dim]", default="5").strip() or "5")
+            do_report = Prompt.ask("[dim]Save report? (y/N)[/dim]", default="n").lower().startswith("y")
+            console.print("\n[dim]Harvesting emails...[/dim]")
+            data = email_harvest(domain, limit=limit)
+            all_data["email_harvest"] = data
+            print_email_results(data)
+            if do_report:
+                save_report(domain, all_data, str(get_output_dir()))
+
+        elif mode == "3":
+            domain = Prompt.ask("[bold cyan]Domain[/bold cyan] (e.g. example.com)").strip()
+            if not domain:
+                return
+            code = Prompt.ask("[dim]Country code[/dim]", default="+1").strip()
+            limit = int(Prompt.ask("[dim]Max results[/dim]", default="10").strip() or "10")
+            do_report = Prompt.ask("[dim]Save report? (y/N)[/dim]", default="n").lower().startswith("y")
+            console.print("\n[dim]Searching phone numbers...[/dim]")
+            data = phone_harvest(domain, country_code=code, limit=limit)
+            all_data["phone_harvest"] = data
+            print_phone_results(data)
+            if do_report:
+                save_report(domain, all_data, str(get_output_dir()))
+
+        elif mode == "4":
+            domain = Prompt.ask("[bold cyan]Domain[/bold cyan] (e.g. example.com)").strip()
+            if not domain:
+                return
+            raw_cats = Prompt.ask("[dim]Categories (comma-separated, blank for defaults)[/dim]", default="").strip()
+            cat_list = [c.strip() for c in raw_cats.split(",") if c.strip()] or None
+            limit = int(Prompt.ask("[dim]Results per category[/dim]", default="5").strip() or "5")
+            do_report = Prompt.ask("[dim]Save report? (y/N)[/dim]", default="n").lower().startswith("y")
+            console.print("\n[dim]Searching pages...[/dim]")
+            data = page_search(domain, categories=cat_list, limit_per_cat=limit)
+            all_data["page_search"] = data
+            print_page_results(data)
+            if do_report:
+                save_report(domain, all_data, str(get_output_dir()))
+
+        elif mode == "5":
+            name = Prompt.ask("[bold cyan]First name[/bold cyan]").strip()
+            if not name:
+                return
+            surname = Prompt.ask("[dim]Last name (optional)[/dim]", default="").strip()
+            phone = Prompt.ask("[dim]Phone number (optional)[/dim]", default="").strip()
+            limit = int(Prompt.ask("[dim]Results per source[/dim]", default="10").strip() or "10")
+            do_report = Prompt.ask("[dim]Save report? (y/N)[/dim]", default="n").lower().startswith("y")
+            console.print("\n[dim]Searching for person...[/dim]")
+            data = person_search(name, surname=surname, phone=phone, limit=limit)
+            all_data["person"] = data
+            print_person_results(data)
+            if do_report:
+                label = f"{name}_{surname}".strip("_")
+                save_report(label, all_data, str(get_output_dir()))
+
+        elif mode == "6":
+            dork = Prompt.ask("[bold cyan]Dork query[/bold cyan]").strip()
+            if not dork:
+                return
+            limit = int(Prompt.ask("[dim]Max results[/dim]", default="10").strip() or "10")
+            do_report = Prompt.ask("[dim]Save report? (y/N)[/dim]", default="n").lower().startswith("y")
+            console.print("\n[dim]Executing dork...[/dim]")
+            data = custom_dork(dork, limit=limit)
+            all_data["custom_dork"] = data
+            print_custom_dork_results(data)
+            if do_report:
+                save_report("custom_dork", all_data, str(get_output_dir()))
+
+        else:
+            console.print(f"[{THEME_WARNING}]Invalid mode.[/{THEME_WARNING}]")
+
+
+class DomainTwistModule(OsintModule):
+    TITLE = "Domain Typosquatting (dnstwist)"
+    DESCRIPTION = (
+        "Generate domain name permutations (omission, transposition, homoglyph, IDN, …)\n"
+        "and resolve which ones are registered — detect phishing / brand-jacking."
+    )
+    TAGS = ["domain", "dns", "typosquat", "phishing", "brand", "recon"]
+    ICON = "🌀"
+    OPTIONAL_DEPS = ["dnstwist"]
+
+    def run_interactive(self) -> None:
+        from modules.domain_twist import twist_domain, print_twist_results
+        from modules.report import save_report
+        from config import get_output_dir
+
+        self.show_info()
+
+        domain = Prompt.ask("[bold cyan]Domain[/bold cyan] (e.g. example.com)").strip()
+        if not domain:
+            return
+
+        reg_only_str = Prompt.ask("[dim]Registered domains only? (Y/n)[/dim]", default="y").strip().lower()
+        registered_only = not reg_only_str.startswith("n")
+
+        limit = int(Prompt.ask("[dim]Max results[/dim]", default="100").strip() or "100")
+        do_report = Prompt.ask("[dim]Save report? (y/N)[/dim]", default="n").lower().startswith("y")
+
+        console.print(f"\n[dim]Running dnstwist on {domain}… (may take a minute)[/dim]")
+        data = twist_domain(domain, limit=limit, registered_only=registered_only)
+        print_twist_results(data)
+
+        if do_report:
+            save_report(domain, {"domain_twist": data}, str(get_output_dir()))
+            console.print(f"[{THEME_SUCCESS}]✔ Report saved to {get_output_dir()}[/{THEME_SUCCESS}]")
+
+
+class UsernameHttpModule(OsintModule):
+    TITLE = "Username Site Checker (HTTP)"
+    DESCRIPTION = (
+        "Check 260+ websites for a username via HTTP status codes and error-message\n"
+        "validation. Built-in site database — no external tools required."
+    )
+    TAGS = ["username", "social", "http", "osint", "recon", "sites"]
+    ICON = "👤"
+    OPTIONAL_DEPS = []
+
+    def run_interactive(self) -> None:
+        from modules.username_http import check_username_sites, print_username_site_results
+        from modules.report import save_report
+        from config import get_output_dir
+
+        self.show_info()
+
+        username = Prompt.ask("[bold cyan]Username[/bold cyan]").strip()
+        if not username:
+            return
+
+        nsfw_str = Prompt.ask("[dim]Skip NSFW sites? (Y/n)[/dim]", default="y").strip().lower()
+        skip_nsfw = not nsfw_str.startswith("n")
+
+        found_only_str = Prompt.ask("[dim]Show found-only results? (Y/n)[/dim]", default="y").strip().lower()
+        found_only = not found_only_str.startswith("n")
+
+        threads = int(Prompt.ask("[dim]Parallel threads[/dim]", default="10").strip() or "10")
+        do_report = Prompt.ask("[dim]Save report? (y/N)[/dim]", default="n").lower().startswith("y")
+
+        console.print(f"\n[dim]Scanning {username} across 260+ sites…[/dim]")
+        data = check_username_sites(username, threads=threads, skip_nsfw=skip_nsfw, found_only=found_only)
+        print_username_site_results(data)
+
+        if do_report:
+            save_report(username, {"username_http": data}, str(get_output_dir()))
+            console.print(f"[{THEME_SUCCESS}]✔ Report saved to {get_output_dir()}[/{THEME_SUCCESS}]")
+
+
+class EmailForensicsModule(OsintModule):
+    TITLE = "Email Forensics (CVE-2023-23397)"
+    DESCRIPTION = (
+        "Analyse Outlook .msg files for CVE-2023-23397 exploitation indicators.\n"
+        "Detects UNC-path injection in calendar reminders (NTLM credential theft).\n"
+        "Requires: compoundfiles, outlook-msg, extract-msg, python-dateutil"
+    )
+    TAGS = ["email", "forensics", "cve", "outlook", "msg", "malware", "unc"]
+    ICON = "📧"
+    OPTIONAL_DEPS = ["compoundfiles", "extract_msg"]
+
+    def run_interactive(self) -> None:
+        from modules.email_forensics import analyse_path, print_forensics_results
+        from modules.report import save_report
+        from config import get_output_dir
+
+        self.show_info()
+
+        path = Prompt.ask(
+            "[bold cyan]Path[/bold cyan] (single .msg file or directory containing .msg files)"
+        ).strip().strip('"')
+        if not path:
+            return
+
+        do_report = Prompt.ask("[dim]Save report? (y/N)[/dim]", default="n").lower().startswith("y")
+
+        console.print(f"\n[dim]Analysing: {path}[/dim]")
+        data = analyse_path(path)
+        print_forensics_results(data)
+
+        if do_report:
+            from pathlib import Path as _Path
+            label = _Path(path).stem or "forensics"
+            save_report(label, {"email_forensics": data}, str(get_output_dir()))
+            console.print(f"[{THEME_SUCCESS}]✔ Report saved to {get_output_dir()}[/{THEME_SUCCESS}]")
+
+
 # ── Registry of all modules (ordered for menu display) ────────────────────────
 
 ALL_MODULES: list[OsintModule] = [
     DomainModule(),
     EmailModule(),
     UsernameModule(),
+    UsernameHttpModule(),
     PhoneModule(),
     IPModule(),
     SSLModule(),
@@ -800,4 +1152,8 @@ ALL_MODULES: list[OsintModule] = [
     YoutubeModule(),
     ContactsModule(),
     DorksModule(),
+    SocialFootprintModule(),
+    DorkerSearchModule(),
+    DomainTwistModule(),
+    EmailForensicsModule(),
 ]

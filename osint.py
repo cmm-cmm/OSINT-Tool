@@ -706,6 +706,202 @@ def cmd_social(fb_id, tt_user, ig_user, tw_user, reddit_user, report, output):
         save_report(identifier, all_data, output)
 
 
+@cli.command("footprint")
+@click.argument("username")
+@click.option("--platform", "-p", default="all",
+              help="Platform: instagram, tiktok, twitter, github, facebook, linkedin, "
+                   "youtube, reddit, pinterest, snapchat, all, or any domain (default: all)")
+@click.option("--associate", "-a", default=None, metavar="USERNAME2",
+              help="Second username — detect connection between two people")
+@click.option("--limited", "-l", is_flag=True, default=False,
+              help="Only return results where the username appears in the URL")
+@click.option("--limit", "max_results", default=10, show_default=True,
+              help="Max number of results to retrieve")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."),
+              help="Output directory for report")
+@click.option("--output-format", "out_fmt",
+              type=click.Choice(["table", "json"]), default="table")
+def cmd_footprint(username, platform, associate, limited, max_results, report, output, out_fmt):
+    """Search username footprint across social platforms via DuckDuckGo.
+
+    Uses DuckDuckGo site: operator — no API key needed.
+    Finds mentions, comments, tags, and profile links beyond just profile existence.
+
+    \b
+    Examples:
+      python osint.py footprint johndoe
+      python osint.py footprint johndoe --platform instagram
+      python osint.py footprint johndoe --platform instagram --limited
+      python osint.py footprint johndoe --associate janedoe --platform facebook
+      python osint.py footprint johndoe --platform all --limit 20 --report
+    """
+    from modules.social_footprint import (
+        footprint_search, association_search,
+        print_footprint_results, print_association_results,
+    )
+
+    username = username.lstrip("@").strip()
+
+    if out_fmt == "table":
+        print_banner()
+
+    all_data: dict = {}
+
+    if associate:
+        associate = associate.lstrip("@").strip()
+        if out_fmt == "table":
+            console.print(f"[dim]Searching association between @{username} and @{associate}...[/dim]")
+        data = association_search(username, associate, platform=platform, limit=max_results)
+        all_data["association"] = data
+        if out_fmt == "table":
+            print_association_results(data)
+        elif out_fmt == "json":
+            print(json.dumps(all_data, indent=2, ensure_ascii=False, default=str))
+    else:
+        if out_fmt == "table":
+            mode = "limited" if limited else "standard"
+            console.print(f"[dim]Searching @{username} on {platform} ({mode} mode)...[/dim]")
+        data = footprint_search(username, platform=platform, limit=max_results, limited=limited)
+        all_data["social_footprint"] = data
+        if out_fmt == "table":
+            print_footprint_results(data)
+        elif out_fmt == "json":
+            print(json.dumps(all_data, indent=2, ensure_ascii=False, default=str))
+
+    if report:
+        label = f"{username}+{associate}" if associate else username
+        save_report(label, all_data, output)
+
+
+@cli.command("dorker")
+@click.argument("target", default="")
+@click.option("--mode", "-m",
+              type=click.Choice(["files", "emails", "phones", "pages", "person", "dork"]),
+              default="files", show_default=True,
+              help="Scan mode")
+@click.option("--filetypes", "-f", default=None,
+              help="Comma-separated file types for 'files' mode (e.g. pdf,xls,sql,env)")
+@click.option("--country-code", "-c", default="+1", show_default=True,
+              help="Country dialing code for 'phones' mode (e.g. +84)")
+@click.option("--surname", "-s", default="", help="Surname for 'person' mode")
+@click.option("--phone", default="", help="Phone/number hint for 'person' mode")
+@click.option("--categories", default=None,
+              help="Comma-separated page keywords for 'pages' mode (e.g. admin,login,backup)")
+@click.option("--dork", "-d", "dork_query", default=None,
+              help="Raw dork query for 'dork' mode")
+@click.option("--limit", default=10, show_default=True, help="Max results per query")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."),
+              help="Output directory for report")
+@click.option("--output-format", "out_fmt",
+              type=click.Choice(["table", "json"]), default="table")
+def cmd_dorker(target, mode, filetypes, country_code, surname, phone,
+               categories, dork_query, limit, report, output, out_fmt):
+    """Execute Google dork queries via DuckDuckGo and retrieve live results.
+
+    Amera-inspired: file discovery, email/phone harvest, person OSINT, custom dork.
+    Complements the 'person' command which only generates dork URLs.
+
+    \b
+    Examples:
+      python osint.py dorker example.com --mode files
+      python osint.py dorker example.com --mode files --filetypes pdf,xls,sql
+      python osint.py dorker example.com --mode emails
+      python osint.py dorker example.com --mode phones --country-code +84
+      python osint.py dorker example.com --mode pages --categories admin,login,backup
+      python osint.py dorker "John" --mode person --surname "Doe" --phone "+84"
+      python osint.py dorker --mode dork --dork 'site:github.com "api_key" filetype:env'
+    """
+    from modules.dorker_search import (
+        file_search, email_harvest, phone_harvest,
+        page_search, person_search, custom_dork,
+        print_file_results, print_email_results, print_phone_results,
+        print_page_results, print_person_results, print_custom_dork_results,
+    )
+
+    if out_fmt == "table":
+        print_banner()
+
+    all_data: dict = {}
+
+    if mode == "files":
+        if not target:
+            console.print("[red]✗ TARGET domain is required for 'files' mode.[/red]")
+            return
+        ft_list = [f.strip() for f in filetypes.split(",")] if filetypes else None
+        if out_fmt == "table":
+            console.print(f"[dim]Discovering exposed files on {target}...[/dim]")
+        data = file_search(target, filetypes=ft_list, limit_per_type=limit)
+        all_data["file_discovery"] = data
+        if out_fmt == "table":
+            print_file_results(data)
+
+    elif mode == "emails":
+        if not target:
+            console.print("[red]✗ TARGET domain is required for 'emails' mode.[/red]")
+            return
+        if out_fmt == "table":
+            console.print(f"[dim]Harvesting emails from {target}...[/dim]")
+        data = email_harvest(target, limit=limit)
+        all_data["email_harvest"] = data
+        if out_fmt == "table":
+            print_email_results(data)
+
+    elif mode == "phones":
+        if not target:
+            console.print("[red]✗ TARGET domain is required for 'phones' mode.[/red]")
+            return
+        if out_fmt == "table":
+            console.print(f"[dim]Searching phone numbers on {target} (code: {country_code})...[/dim]")
+        data = phone_harvest(target, country_code=country_code, limit=limit)
+        all_data["phone_harvest"] = data
+        if out_fmt == "table":
+            print_phone_results(data)
+
+    elif mode == "pages":
+        if not target:
+            console.print("[red]✗ TARGET domain is required for 'pages' mode.[/red]")
+            return
+        cat_list = [c.strip() for c in categories.split(",")] if categories else None
+        if out_fmt == "table":
+            console.print(f"[dim]Discovering pages on {target}...[/dim]")
+        data = page_search(target, categories=cat_list, limit_per_cat=limit)
+        all_data["page_search"] = data
+        if out_fmt == "table":
+            print_page_results(data)
+
+    elif mode == "person":
+        name = target
+        if not name:
+            console.print("[red]✗ TARGET (first name) is required for 'person' mode.[/red]")
+            return
+        if out_fmt == "table":
+            full = f"{name} {surname}".strip()
+            console.print(f"[dim]Searching for person: {full}...[/dim]")
+        data = person_search(name, surname=surname, phone=phone, limit=limit)
+        all_data["person"] = data
+        if out_fmt == "table":
+            print_person_results(data)
+
+    elif mode == "dork":
+        if not dork_query:
+            console.print("[red]✗ --dork is required for 'dork' mode.[/red]")
+            return
+        if out_fmt == "table":
+            console.print(f"[dim]Executing: {dork_query}...[/dim]")
+        data = custom_dork(dork_query, limit=limit)
+        all_data["custom_dork"] = data
+        if out_fmt == "table":
+            print_custom_dork_results(data)
+
+    if out_fmt == "json":
+        print(json.dumps(all_data, indent=2, ensure_ascii=False, default=str))
+
+    if report:
+        save_report(target or "dork", all_data, output)
+
+
 @cli.command("youtube")
 @click.argument("channel")
 @click.option("--yt-key", "yt_key", envvar="YOUTUBE_V2_KEY", default=None, help="YouTube V2 RapidAPI key")
@@ -1009,8 +1205,123 @@ def cmd_update():
         console.print("\n[bold green]✔ Update complete.[/bold green]")
 
 
-@cli.command("menu")
-def cmd_menu():
+@cli.command("twist")
+@click.argument("domain")
+@click.option("--all-domains", "all_domains", is_flag=True,
+              help="Include unregistered permutations (slow). Default: registered only.")
+@click.option("--limit", default=100, show_default=True, help="Max results to display")
+@click.option("--threads", default=8, show_default=True, help="DNS resolution threads")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory")
+@click.option("--output-format", "out_fmt", type=click.Choice(["table", "json"]), default="table")
+def cmd_twist(domain, all_domains, limit, threads, report, output, out_fmt):
+    """Detect typosquatting domains using dnstwist permutation engine.
+
+    Generates variations (omission, transposition, homoglyph, IDN, bitsquatting…)
+    and resolves which ones are registered. Requires: pip install dnstwist
+
+    \b
+    Examples:
+      python osint.py twist example.com
+      python osint.py twist example.com --all-domains
+      python osint.py twist example.com --limit 50 --report
+    """
+    from modules.domain_twist import twist_domain, print_twist_results
+
+    if out_fmt == "table":
+        print_banner()
+        console.print(f"[dim]Running dnstwist on {domain}… (may take a minute)[/dim]")
+
+    data = twist_domain(domain, limit=limit, registered_only=not all_domains, threads=threads)
+
+    if out_fmt == "json":
+        print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
+    else:
+        print_twist_results(data)
+
+    if report:
+        save_report(domain, {"domain_twist": data}, output)
+
+
+@cli.command("username-http")
+@click.argument("username")
+@click.option("--all-sites", "all_sites", is_flag=True, help="Show all results, not just found.")
+@click.option("--nsfw", "include_nsfw", is_flag=True, help="Include NSFW sites.")
+@click.option("--threads", default=10, show_default=True, help="Parallel request threads")
+@click.option("--timeout", default=8, show_default=True, help="Request timeout in seconds")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory")
+@click.option("--output-format", "out_fmt", type=click.Choice(["table", "json"]), default="table")
+def cmd_username_http(username, all_sites, include_nsfw, threads, timeout, report, output, out_fmt):
+    """Scan 260+ websites for a username via HTTP (tookie-osint style).
+
+    Uses status codes + error-message validation. No external tools required.
+
+    \b
+    Examples:
+      python osint.py username-http johndoe
+      python osint.py username-http johndoe --all-sites --threads 20
+      python osint.py username-http johndoe --report
+    """
+    from modules.username_http import check_username_sites, print_username_site_results
+
+    if out_fmt == "table":
+        print_banner()
+        console.print(f"[dim]Scanning 260+ sites for username: {username}…[/dim]")
+
+    data = check_username_sites(
+        username,
+        threads=threads,
+        timeout=timeout,
+        skip_nsfw=not include_nsfw,
+        found_only=not all_sites,
+    )
+
+    if out_fmt == "json":
+        print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
+    else:
+        print_username_site_results(data)
+
+    if report:
+        save_report(username, {"username_http": data}, output)
+
+
+@cli.command("email-forensics")
+@click.argument("path")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory")
+@click.option("--output-format", "out_fmt", type=click.Choice(["table", "json"]), default="table")
+def cmd_email_forensics(path, report, output, out_fmt):
+    """Analyse Outlook .msg files for CVE-2023-23397 (UNC-path injection).
+
+    Detects potential NTLM credential theft via malicious calendar reminders.
+    Accepts a single .msg file or a directory (scans all .msg files recursively).
+    Requires: pip install compoundfiles outlook-msg extract-msg python-dateutil
+
+    \b
+    Examples:
+      python osint.py email-forensics suspicious.msg
+      python osint.py email-forensics /path/to/emails/ --report
+    """
+    from modules.email_forensics import analyse_path, print_forensics_results
+
+    if out_fmt == "table":
+        print_banner()
+        console.print(f"[dim]Analysing: {path}[/dim]")
+
+    data = analyse_path(path)
+
+    if out_fmt == "json":
+        print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
+    else:
+        print_forensics_results(data)
+
+    if report:
+        from pathlib import Path as _P
+        save_report(_P(path).stem or "forensics", {"email_forensics": data}, output)
+
+
+
     """Interactive TUI menu — full guided OSINT investigation.
 
     \b
