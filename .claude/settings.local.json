@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(*)"
+      "Bash(*)",
+      "PowerShell(& \"C:\\\\Program Files\\\\Windows Defender\\\\MpCmdRun.exe\" -GetFiles 2>&1)"
     ]
   }
 }
