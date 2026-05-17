@@ -37,13 +37,16 @@ from modules.constants import (
 console = Console(legacy_windows=False)
 
 
+_MARKUP_RE = __import__("re").compile(r"\[/?[^\]]*\]")
+
 def _ask(prompt_str: str, default: str = "") -> str:
-    """Portable input: display prompt via Rich, read via input(). Avoids Rich Prompt bugs on Windows."""
+    """Portable input using plain print+input — no Rich console involved in reading."""
+    plain = _MARKUP_RE.sub("", prompt_str).strip()
     try:
-        console.print(prompt_str, end=" ")
-    except Exception:
-        sys.stdout.write(prompt_str.replace("[", "").replace("]", "") + " ")
+        sys.stdout.write(plain + " ")
         sys.stdout.flush()
+    except Exception:
+        pass
     try:
         val = input().strip()
         return val if val else default
@@ -378,14 +381,44 @@ def run_tui() -> None:
             sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
     while True:
+        try:
+            _tui_loop_body()
+        except SystemExit:
+            raise
+        except KeyboardInterrupt:
+            print("\nGoodbye! Stay legal.")
+            raise SystemExit(0)
+        except BaseException as e:
+            import traceback
+            _log_error(e)
+            try:
+                console.print(f"[bold red]TUI Error: {type(e).__name__}: {e}[/bold red]")
+            except Exception:
+                print(f"\nTUI Error: {type(e).__name__}: {e}")
+
+
+def _log_error(exc: BaseException) -> None:
+    """Write exception to log file for debugging."""
+    import traceback, datetime
+    try:
+        log_path = __import__("pathlib").Path.home() / ".osint-tool" / "tui_errors.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n--- {datetime.datetime.now().isoformat()} ---\n")
+            f.write(traceback.format_exc())
+    except Exception:
+        pass
+
+
+def _tui_loop_body() -> None:
+    """Single iteration of the TUI main loop."""
+    active_modules  = [m for m in ALL_MODULES if not m.ARCHIVED]
+    archived_modules = [m for m in ALL_MODULES if m.ARCHIVED]
+
+    try:
         console.clear()
         console.print(_build_header())
-
-        active_modules  = [m for m in ALL_MODULES if not m.ARCHIVED]
-        archived_modules = [m for m in ALL_MODULES if m.ARCHIVED]
-
         _print_main_menu(active_modules, archived_modules)
-
         console.print(
             "\n  [dim cyan]/keyword[/dim cyan][dim] search  "
             "[/dim][dim cyan]t tag[/dim cyan][dim] filter  "
@@ -397,76 +430,79 @@ def run_tui() -> None:
             "[/dim][dim cyan]?[/dim cyan][dim] help  "
             "[/dim][dim cyan]q[/dim cyan][dim]uit[/dim]"
         )
+    except Exception as e:
+        _log_error(e)
 
-        raw = _ask("[bold cyan]╰─>[/bold cyan]", "").strip()
-        if not raw:
-            continue
+    raw = _ask("\n╰─>", "").strip()
+    if not raw:
+        return
 
-        # ── Global commands ────────────────────────────────────────────────────
-        if raw.lower() in ("q", "quit", "exit"):
-            console.print("\n[dim]Goodbye! Stay legal.[/dim]\n")
-            raise SystemExit(0)
+    # ── Global commands ──────────────────────────────────────────────────────
+    if raw.lower() in ("q", "quit", "exit"):
+        print("\nGoodbye! Stay legal.")
+        raise SystemExit(0)
 
-        if raw in ("?", "help"):
-            _show_inline_help()
-            continue
+    if raw in ("?", "help"):
+        _show_inline_help()
+        return
 
-        if raw.lower() == "cfg":
-            _show_config_menu()
-            continue
+    if raw.lower() == "cfg":
+        _show_config_menu()
+        return
 
-        if raw.lower() == "log":
-            _show_scan_history()
-            continue
+    if raw.lower() == "log":
+        _show_scan_history()
+        return
 
-        # Search
-        if raw.startswith("/"):
-            query = raw[1:].strip()
-            if query:
-                results = _search_modules(query, active_modules)
-                _handle_filtered_results(results, f'Search: "{query}"')
-            continue
+    if raw.startswith("/"):
+        query = raw[1:].strip()
+        if query:
+            results = _search_modules(query, active_modules)
+            _handle_filtered_results(results, f'Search: "{query}"')
+        return
 
-        # Tag filter
-        if raw.lower().startswith("t "):
-            tag = raw[2:].strip()
-            if tag:
-                results = _filter_by_tag(tag, active_modules)
-                _handle_filtered_results(results, f"Tag: #{tag}")
-            continue
+    if raw.lower().startswith("t "):
+        tag = raw[2:].strip()
+        if tag:
+            results = _filter_by_tag(tag, active_modules)
+            _handle_filtered_results(results, f"Tag: #{tag}")
+        return
 
-        # Numeric selections
+    try:
+        choice = int(raw)
+    except ValueError:
         try:
-            choice = int(raw)
-        except ValueError:
-            console.print(f"[{THEME_ERROR}]⚠ Enter a number, /search, t tag, ? help, or q quit.[/{THEME_ERROR}]")
-            _ask("[dim]Press Enter[/dim]", "")
-            continue
+            console.print(f"[{THEME_ERROR}]⚠ Enter a number, /search, t tag, ? or q.[/{THEME_ERROR}]")
+        except Exception:
+            print("⚠ Enter a number, /search, t tag, ? or q.")
+        input("Press Enter...")
+        return
 
-        if choice == 99:
-            console.print("\n[dim]Goodbye! Stay legal.[/dim]\n")
-            raise SystemExit(0)
+    if choice == 99:
+        print("\nGoodbye! Stay legal.")
+        raise SystemExit(0)
 
-        if choice == 98:
-            from modules.external_tools import show_external_tools_menu
-            show_external_tools_menu()
-            continue
+    if choice == 98:
+        from modules.external_tools import show_external_tools_menu
+        show_external_tools_menu()
+        return
 
-        if choice == 97:
-            _install_all_missing_deps()
-            continue
+    if choice == 97:
+        _install_all_missing_deps()
+        return
 
-        if choice == 95 and archived_modules:
-            _show_archived_menu(archived_modules)
-            continue
+    if choice == 95 and archived_modules:
+        _show_archived_menu(archived_modules)
+        return
 
-        if 1 <= choice <= len(active_modules):
-            _run_module(active_modules[choice - 1])
-            continue
-        else:
+    if 1 <= choice <= len(active_modules):
+        _run_module(active_modules[choice - 1])
+    else:
+        try:
             console.print(f"[{THEME_ERROR}]⚠ Invalid option.[/{THEME_ERROR}]")
-            _ask("[dim]Press Enter[/dim]", "")
-            continue
+        except Exception:
+            print("⚠ Invalid option.")
+        input("Press Enter...")
 
 
 # ── Menu renderer ──────────────────────────────────────────────────────────────

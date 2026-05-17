@@ -49,16 +49,19 @@ if sys.platform.startswith('win'):
         _rich_pkg._console = _RichConsole(legacy_windows=False)
     except Exception:
         pass
-    # Patch PromptBase.get_input to use plain input() instead of console.input().
-    # console.input() has Windows-specific issues; input() is always reliable.
+    # Patch PromptBase.get_input to use plain sys.stdout + input() instead of console.input().
+    # console.input() causes crashes on real Windows terminals (isatty=True); input() is safe.
     try:
+        import re as _re
         from rich.prompt import PromptBase as _PromptBase
         import getpass as _getpass
 
         @classmethod
         def _get_input_compat(cls, console, prompt, password, stream=None):
             try:
-                console.print(prompt, end="")
+                plain = prompt.plain if hasattr(prompt, "plain") else _re.sub(r"\[/?[^\]]*\]", "", str(prompt))
+                sys.stdout.write(plain.strip() + " ")
+                sys.stdout.flush()
             except Exception:
                 pass
             if password:
