@@ -46,6 +46,14 @@ if sys.platform.startswith('win'):
             sys.stderr.reconfigure(encoding='utf-8', errors='replace')
         except Exception:
             pass
+    # Neutralize win_unicode_console before any library (instaloader) calls enable().
+    # Python 3.6+ handles Unicode console natively; the hook corrupts stdin on 3.13+.
+    try:
+        import win_unicode_console as _wuc
+        _wuc.enable = lambda **kwargs: None
+    except ImportError:
+        pass
+
     # Reset Rich's global console (used by Prompt.ask, print, etc.) to ANSI mode.
     # This MUST happen before any code calls get_console() for the first time.
     try:
