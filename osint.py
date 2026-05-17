@@ -13,10 +13,13 @@ Người dùng chịu trách nhiệm tuân thủ luật pháp địa phương.
 import sys
 
 # ── Fix Windows encoding early ──────────────────────────────────────────────────
+# Must run before ANY import that touches Rich, because Rich's get_console()
+# creates a global Console lazily — if that Console is created before this fix,
+# it gets legacy_windows=True (cp1252) and ALL Prompt.ask() calls crash.
 if sys.platform.startswith('win'):
     import os
     import ctypes
-    # Enable ANSI virtual terminal processing
+    # Enable ANSI virtual terminal processing in the Windows console
     try:
         _k32 = ctypes.windll.kernel32
         _handle = _k32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
@@ -27,14 +30,6 @@ if sys.platform.startswith('win'):
         _k32.SetConsoleCP(65001)
     except Exception:
         pass
-    # Force Rich to use ANSI renderer (not legacy cp1252 Win32 renderer).
-    # Must run before ANY module that does `console = Console()` is imported.
-    import rich.console as _rich_console
-    _rich_Console_orig_init = _rich_console.Console.__init__
-    def _rich_Console_patched_init(self, *args, **kwargs):
-        kwargs.setdefault('legacy_windows', False)
-        _rich_Console_orig_init(self, *args, **kwargs)
-    _rich_console.Console.__init__ = _rich_Console_patched_init
     os.environ['PYTHONIOENCODING'] = 'utf-8'
     if hasattr(sys.stdout, 'reconfigure'):
         try:
@@ -46,6 +41,14 @@ if sys.platform.startswith('win'):
             sys.stderr.reconfigure(encoding='utf-8', errors='replace')
         except Exception:
             pass
+    # Reset Rich's global console (used by Prompt.ask, print, etc.) to ANSI mode.
+    # This MUST happen before any code calls get_console() for the first time.
+    try:
+        import rich as _rich_pkg
+        from rich.console import Console as _RichConsole
+        _rich_pkg._console = _RichConsole(legacy_windows=False)
+    except Exception:
+        pass
 
 # ── Python version gate ────────────────────────────────────────────────────────
 if sys.version_info < (3, 10):
