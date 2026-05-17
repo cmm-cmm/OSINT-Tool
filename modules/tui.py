@@ -24,7 +24,6 @@ from rich.align import Align
 from rich.columns import Columns
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Prompt
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
@@ -36,6 +35,22 @@ from modules.constants import (
 )
 
 console = Console(legacy_windows=False)
+
+
+def _ask(prompt_str: str, default: str = "") -> str:
+    """Portable input: display prompt via Rich, read via input(). Avoids Rich Prompt bugs on Windows."""
+    try:
+        console.print(prompt_str, end=" ")
+    except Exception:
+        sys.stdout.write(prompt_str.replace("[", "").replace("]", "") + " ")
+        sys.stdout.flush()
+    try:
+        val = input().strip()
+        return val if val else default
+    except EOFError:
+        return default
+    except KeyboardInterrupt:
+        raise
 
 # ── Security quotes (shown randomly in header) ────────────────────────────────
 
@@ -183,7 +198,7 @@ def _show_inline_help() -> None:
         box=box.ROUNDED,
         padding=(0, 2),
     ))
-    Prompt.ask("[dim]Press Enter to return[/dim]", default="")
+    _ask("[dim]Press Enter to return[/dim]", "")
 
 
 # ── Search / filter helpers ───────────────────────────────────────────────────
@@ -223,7 +238,7 @@ def _show_archived_menu(archived: list[OsintModule]) -> None:
     table.add_row("99", "Back", "")
     console.print(table)
 
-    raw = Prompt.ask("[bold yellow]╰─>[/bold yellow]", default="99").strip()
+    raw = _ask("[bold yellow]╰─>[/bold yellow]", "99").strip()
     try:
         choice = int(raw)
         if 1 <= choice <= len(archived):
@@ -244,7 +259,7 @@ def _show_scan_history() -> None:
 
     if not records:
         console.print("[dim]No scan history yet. Run a module to start logging.[/dim]\n")
-        Prompt.ask("[dim]Press Enter to return[/dim]", default="")
+        _ask("[dim]Press Enter to return[/dim]", "")
         return
 
     table = Table(box=box.SIMPLE_HEAD, show_lines=False)
@@ -263,7 +278,7 @@ def _show_scan_history() -> None:
         )
 
     console.print(table)
-    Prompt.ask("\n[dim]Press Enter to return[/dim]", default="")
+    _ask("\n[dim]Press Enter to return[/dim]", "")
 
 
 # ── Config viewer ─────────────────────────────────────────────────────────────
@@ -287,7 +302,7 @@ def _show_config_menu() -> None:
             "\n  [bold cyan]s key value[/bold cyan]  set a config value"
             "  [bold cyan]99[/bold cyan]  back\n"
         )
-        raw = Prompt.ask("[bold cyan]╰─>[/bold cyan]", default="99").strip()
+        raw = _ask("[bold cyan]╰─>[/bold cyan]", "99").strip()
 
         if raw in ("99", "q", "back", ""):
             return
@@ -297,21 +312,21 @@ def _show_config_menu() -> None:
                 key, val = parts
                 cfg_module.set_value(key, val)
                 console.print(f"[{THEME_SUCCESS}]✔ Set {key} = {val}[/{THEME_SUCCESS}]")
-                Prompt.ask("[dim]Press Enter[/dim]", default="")
+                _ask("[dim]Press Enter[/dim]", "")
             else:
                 console.print(f"[{THEME_ERROR}]Usage: s key value[/{THEME_ERROR}]")
-                Prompt.ask("[dim]Press Enter[/dim]", default="")
+                _ask("[dim]Press Enter[/dim]", "")
 
 
 # ── Module sub-menu ────────────────────────────────────────────────────────────
 
 def _run_module(module: OsintModule) -> None:
-    """Show module info then run, catching Ctrl+C and other exceptions."""
+    """Run a module, catching all exceptions including SystemExit."""
     try:
         console.clear()
     except Exception:
         pass
-    
+
     try:
         module.run()
     except KeyboardInterrupt:
@@ -319,21 +334,21 @@ def _run_module(module: OsintModule) -> None:
             console.print(f"\n[{THEME_WARNING}]⚠ Cancelled.[/{THEME_WARNING}]")
         except Exception:
             print("\n⚠ Cancelled.")
-    except Exception as e:
+    except SystemExit:
+        pass
+    except BaseException as e:
+        import traceback
         try:
-            console.print(f"\n[{THEME_ERROR}]✗ Error: {type(e).__name__}: {e}[/{THEME_ERROR}]")
-            import traceback
+            console.print(f"\n[{THEME_ERROR}]✗ {type(e).__name__}: {e}[/{THEME_ERROR}]")
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
         except Exception:
-            print(f"\n✗ Error: {type(e).__name__}: {e}")
-    
+            print(f"\n✗ {type(e).__name__}: {e}")
+            traceback.print_exc()
+
     try:
-        Prompt.ask("\n[dim]Press Enter to return to menu[/dim]", default="")
+        input("\nPress Enter to return to menu...")
     except Exception:
-        try:
-            input("\nPress Enter to return to menu: ")
-        except Exception:
-            pass
+        pass
 
 
 # ── Main TUI menu ─────────────────────────────────────────────────────────────
@@ -383,7 +398,7 @@ def run_tui() -> None:
             "[/dim][dim cyan]q[/dim cyan][dim]uit[/dim]"
         )
 
-        raw = Prompt.ask("[bold cyan]╰─>[/bold cyan]", default="").strip()
+        raw = _ask("[bold cyan]╰─>[/bold cyan]", "").strip()
         if not raw:
             continue
 
@@ -425,7 +440,7 @@ def run_tui() -> None:
             choice = int(raw)
         except ValueError:
             console.print(f"[{THEME_ERROR}]⚠ Enter a number, /search, t tag, ? help, or q quit.[/{THEME_ERROR}]")
-            Prompt.ask("[dim]Press Enter[/dim]", default="")
+            _ask("[dim]Press Enter[/dim]", "")
             continue
 
         if choice == 99:
@@ -450,7 +465,7 @@ def run_tui() -> None:
             continue
         else:
             console.print(f"[{THEME_ERROR}]⚠ Invalid option.[/{THEME_ERROR}]")
-            Prompt.ask("[dim]Press Enter[/dim]", default="")
+            _ask("[dim]Press Enter[/dim]", "")
             continue
 
 
@@ -521,7 +536,7 @@ def _handle_filtered_results(results: list[OsintModule], title: str) -> None:
     """Show a filtered list and let the user pick one."""
     if not results:
         console.print(f"[{THEME_WARNING}]⚠ No modules found for '{title}'.[/{THEME_WARNING}]")
-        Prompt.ask("[dim]Press Enter[/dim]", default="")
+        _ask("[dim]Press Enter[/dim]", "")
         return
 
     console.clear()
@@ -541,7 +556,7 @@ def _handle_filtered_results(results: list[OsintModule], title: str) -> None:
     table.add_row("99", "", "Back", "")
     console.print(table)
 
-    raw = Prompt.ask("[bold cyan]╰─>[/bold cyan]", default="99").strip()
+    raw = _ask("[bold cyan]╰─>[/bold cyan]", "99").strip()
     if raw in ("99", "q", "back", ""):
         return
 
@@ -568,7 +583,7 @@ def _install_all_missing_deps() -> None:
 
     if not all_missing:
         console.print(f"[{THEME_SUCCESS}]✔ All optional dependencies are already installed![/{THEME_SUCCESS}]")
-        Prompt.ask("[dim]Press Enter[/dim]", default="")
+        _ask("[dim]Press Enter[/dim]", "")
         return
 
     from modules.constants import OPTIONAL_TOOLS
@@ -588,4 +603,4 @@ def _install_all_missing_deps() -> None:
         os.system(cmd)
 
     console.print(f"\n[{THEME_SUCCESS}]✔ Done![/{THEME_SUCCESS}]")
-    Prompt.ask("[dim]Press Enter to return[/dim]", default="")
+    _ask("[dim]Press Enter to return[/dim]", "")

@@ -49,6 +49,28 @@ if sys.platform.startswith('win'):
         _rich_pkg._console = _RichConsole(legacy_windows=False)
     except Exception:
         pass
+    # Patch PromptBase.get_input to use plain input() instead of console.input().
+    # console.input() has Windows-specific issues; input() is always reliable.
+    try:
+        from rich.prompt import PromptBase as _PromptBase
+        import getpass as _getpass
+
+        @classmethod
+        def _get_input_compat(cls, console, prompt, password, stream=None):
+            try:
+                console.print(prompt, end="")
+            except Exception:
+                pass
+            if password:
+                return _getpass.getpass("")
+            try:
+                return input()
+            except EOFError:
+                return ""
+
+        _PromptBase.get_input = _get_input_compat
+    except Exception:
+        pass
 
 # ── Python version gate ────────────────────────────────────────────────────────
 if sys.version_info < (3, 10):
