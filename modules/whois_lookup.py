@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 from rich import print as rprint
 
-console = Console()
+console = Console(legacy_windows=False)
 
 DNS_RECORD_TYPES = ["A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA", "SRV"]
 HEADERS = {"User-Agent": "OSINT-Tool/1.0 (Educational/Research Purpose)"}
@@ -459,7 +459,15 @@ def subdomain_enum(domain: str) -> dict:
             tasks = [_resolve_with_sem(s) for s in all_subs]
             return [r for r in await asyncio.gather(*tasks) if r]
 
-    found = asyncio.run(_run_all())
+    found = []
+    try:
+        # Wrap async operation với timeout
+        found = asyncio.run(asyncio.wait_for(_run_all(), timeout=60))
+    except asyncio.TimeoutError:
+        console.print("[yellow]⚠ Subdomain enumeration timed out after 60s[/yellow]")
+    except Exception as e:
+        console.print(f"[yellow]⚠ Subdomain enumeration error: {e}[/yellow]")
+    
     result["found"] = sorted(found, key=lambda x: x["subdomain"])
     return result
 
@@ -689,7 +697,10 @@ def test_zone_transfer(domain: str) -> dict:
     for ns in result["nameservers"]:
         result["tested_ns"].append(ns)
         try:
+            # Thêm timeout cho socket operation
+            socket.setdefaulttimeout(5)
             ns_ip = socket.gethostbyname(ns)
+            socket.setdefaulttimeout(None)
             zone = dns.zone.from_xfr(
                 dns.query.xfr(ns_ip, domain, timeout=8, lifetime=12)
             )
@@ -712,6 +723,8 @@ def test_zone_transfer(domain: str) -> dict:
             pass  # AXFR refused — expected behavior
         except Exception:
             pass
+        finally:
+            socket.setdefaulttimeout(None)
 
     return result
 

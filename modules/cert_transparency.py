@@ -14,7 +14,7 @@ from rich import box as _box
 
 from modules.utils import make_session
 
-console = Console()
+console = Console(legacy_windows=False)
 
 
 def search_crt_sh(domain: str, timeout: int = 15) -> dict:

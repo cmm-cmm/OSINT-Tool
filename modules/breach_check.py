@@ -22,7 +22,7 @@ from rich.console import Console
 from rich.table import Table
 from modules.utils import make_session, HEADERS_GENERIC as _HEADERS
 
-console = Console()
+console = Console(legacy_windows=False)
 _session = make_session()
 
 

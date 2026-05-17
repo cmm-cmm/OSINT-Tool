@@ -21,7 +21,7 @@ from rich import box
 
 from modules.utils import RateLimiter
 
-console = Console()
+console = Console(legacy_windows=False)
 
 _rate_limiter = RateLimiter(calls=2, period=3.0)
 

@@ -8,7 +8,7 @@ import re
 import requests
 from rich.console import Console
 
-console = Console()
+console = Console(legacy_windows=False)
 
 _CHANNEL_ID_RE = re.compile(r'"channelId"\s*:\s*"(UC[\w-]{22})"')
 _EXTERNAL_ID_RE = re.compile(r'"externalId"\s*:\s*"(UC[\w-]{22})"')

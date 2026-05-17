@@ -7,7 +7,7 @@ import requests
 from rich.console import Console
 from rich.table import Table
 
-console = Console()
+console = Console(legacy_windows=False)
 
 WEBSITE_CONTACTS_HOST = "website-contacts-scraper.p.rapidapi.com"
 SOCIAL_FIELDS = [

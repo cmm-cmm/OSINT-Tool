@@ -21,7 +21,7 @@ from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from rich import box
 
-console = Console()
+console = Console(legacy_windows=False)
 
 # ── Site database ──────────────────────────────────────────────────────────────
 

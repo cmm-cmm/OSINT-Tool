@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.table import Table
 import requests
 
-console = Console()
+console = Console(legacy_windows=False)
 HEADERS = {"User-Agent": "OSINT-Tool/1.0 (Educational/Research Purpose)"}
 
 # Vietnamese carrier prefix map (E.164 national number without country code)

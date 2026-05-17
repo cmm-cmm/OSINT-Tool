@@ -35,7 +35,7 @@ from modules.constants import (
     THEME_ERROR, THEME_DIM, VERSION_DISPLAY, REPO_URL,
 )
 
-console = Console()
+console = Console(legacy_windows=False)
 
 # ── Security quotes (shown randomly in header) ────────────────────────────────
 
@@ -306,19 +306,61 @@ def _show_config_menu() -> None:
 # ── Module sub-menu ────────────────────────────────────────────────────────────
 
 def _run_module(module: OsintModule) -> None:
-    """Show module info then run, catching Ctrl+C."""
-    console.clear()
+    """Show module info then run, catching Ctrl+C and other exceptions."""
+    try:
+        console.clear()
+    except Exception:
+        pass
+    
     try:
         module.run()
     except KeyboardInterrupt:
-        console.print(f"\n[{THEME_WARNING}]⚠ Cancelled.[/{THEME_WARNING}]")
-    Prompt.ask("\n[dim]Press Enter to return to menu[/dim]", default="")
+        try:
+            console.print(f"\n[{THEME_WARNING}]⚠ Cancelled.[/{THEME_WARNING}]")
+        except Exception:
+            print("\n⚠ Cancelled.")
+    except Exception as e:
+        try:
+            console.print(f"\n[{THEME_ERROR}]✗ Error: {type(e).__name__}: {e}[/{THEME_ERROR}]")
+            import traceback
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        except Exception:
+            print(f"\n✗ Error: {type(e).__name__}: {e}")
+    
+    try:
+        Prompt.ask("\n[dim]Press Enter to return to menu[/dim]", default="")
+    except Exception:
+        try:
+            input("\nPress Enter to return to menu: ")
+        except Exception:
+            pass
 
 
 # ── Main TUI menu ─────────────────────────────────────────────────────────────
 
 def run_tui() -> None:
     """Entry point for the interactive TUI menu."""
+    import os
+    
+    # Fix Windows encoding issues
+    if os.name == 'nt':
+        import ctypes
+        try:
+            _k32 = ctypes.windll.kernel32
+            _h = _k32.GetStdHandle(-11)
+            _m = ctypes.c_ulong()
+            _k32.GetConsoleMode(_h, ctypes.byref(_m))
+            _k32.SetConsoleMode(_h, _m.value | 0x0004)
+            _k32.SetConsoleOutputCP(65001)
+            _k32.SetConsoleCP(65001)
+        except Exception:
+            pass
+        os.environ['PYTHONIOENCODING'] = 'utf-8'
+        import sys
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
     while True:
         console.clear()
@@ -405,9 +447,11 @@ def run_tui() -> None:
 
         if 1 <= choice <= len(active_modules):
             _run_module(active_modules[choice - 1])
+            continue
         else:
             console.print(f"[{THEME_ERROR}]⚠ Invalid option.[/{THEME_ERROR}]")
             Prompt.ask("[dim]Press Enter[/dim]", default="")
+            continue
 
 
 # ── Menu renderer ──────────────────────────────────────────────────────────────

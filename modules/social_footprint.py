@@ -30,7 +30,7 @@ from modules.constants import (
 from modules.utils import RateLimiter
 
 logger = logging.getLogger(__name__)
-console = Console()
+console = Console(legacy_windows=False)
 
 # ── Supported platforms ───────────────────────────────────────────────────────
 

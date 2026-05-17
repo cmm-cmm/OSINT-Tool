@@ -12,6 +12,41 @@ Người dùng chịu trách nhiệm tuân thủ luật pháp địa phương.
 
 import sys
 
+# ── Fix Windows encoding early ──────────────────────────────────────────────────
+if sys.platform.startswith('win'):
+    import os
+    import ctypes
+    # Enable ANSI virtual terminal processing
+    try:
+        _k32 = ctypes.windll.kernel32
+        _handle = _k32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        _mode = ctypes.c_ulong()
+        _k32.GetConsoleMode(_handle, ctypes.byref(_mode))
+        _k32.SetConsoleMode(_handle, _mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        _k32.SetConsoleOutputCP(65001)  # UTF-8 code page
+        _k32.SetConsoleCP(65001)
+    except Exception:
+        pass
+    # Force Rich to use ANSI renderer (not legacy cp1252 Win32 renderer).
+    # Must run before ANY module that does `console = Console()` is imported.
+    import rich.console as _rich_console
+    _rich_Console_orig_init = _rich_console.Console.__init__
+    def _rich_Console_patched_init(self, *args, **kwargs):
+        kwargs.setdefault('legacy_windows', False)
+        _rich_Console_orig_init(self, *args, **kwargs)
+    _rich_console.Console.__init__ = _rich_Console_patched_init
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    if hasattr(sys.stdout, 'reconfigure'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+    if hasattr(sys.stderr, 'reconfigure'):
+        try:
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
 # ── Python version gate ────────────────────────────────────────────────────────
 if sys.version_info < (3, 10):
     print(
@@ -57,7 +92,7 @@ from modules.cloud_recon import cloud_recon, print_cloud_recon
 from modules.instagram_recon import instagram_recon, print_instagram_results
 from modules.cert_transparency import cert_recon, print_cert_results
 
-console = Console()
+console = Console(legacy_windows=False)
 
 _DOMAIN_RE = re.compile(
     r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
@@ -1321,7 +1356,8 @@ def cmd_email_forensics(path, report, output, out_fmt):
         save_report(_P(path).stem or "forensics", {"email_forensics": data}, output)
 
 
-
+@cli.command("menu")
+def cmd_menu():
     """Interactive TUI menu — full guided OSINT investigation.
 
     \b

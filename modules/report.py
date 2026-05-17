@@ -10,7 +10,7 @@ import datetime
 from pathlib import Path
 from rich.console import Console
 
-console = Console()
+console = Console(legacy_windows=False)
 
 
 def _e(value) -> str:

@@ -28,7 +28,7 @@ from modules.constants import (
     _IS_WINDOWS, _HAS_GO, _go_install_note,
 )
 
-console = Console()
+console = Console(legacy_windows=False)
 
 
 @dataclass

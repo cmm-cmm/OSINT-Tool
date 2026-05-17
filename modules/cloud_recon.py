@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 from rich import box
 
-console = Console()
+console = Console(legacy_windows=False)
 HEADERS = {"User-Agent": "OSINT-Tool/1.0 (Educational/Research Purpose)"}
 TIMEOUT = 8
 

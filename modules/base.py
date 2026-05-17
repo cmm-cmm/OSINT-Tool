@@ -21,7 +21,7 @@ from modules.constants import (
     THEME_PRIMARY, THEME_SUCCESS, THEME_WARNING, THEME_ERROR,
 )
 
-console = Console()
+console = Console(legacy_windows=False)
 
 
 class OsintModule:
@@ -135,6 +135,7 @@ class OsintModule:
         Public entry called by TUI. Wraps run_interactive() with:
         - Internet connectivity warning (non-blocking)
         - Scan history logging
+        - Exception handling
         """
         from modules.utils import check_internet, append_scan_history
 
@@ -149,6 +150,9 @@ class OsintModule:
             append_scan_history(self.TITLE, target_hint or "—", status="ok")
         except KeyboardInterrupt:
             append_scan_history(self.TITLE, target_hint or "—", status="cancelled")
+            raise
+        except Exception as e:
+            append_scan_history(self.TITLE, target_hint or "—", status="error")
             raise
 
 
