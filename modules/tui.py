@@ -60,6 +60,7 @@ def _ask(prompt_str: str, default: str = "") -> str:
     try:
         sys.stdout.write(plain + " ")
         sys.stdout.flush()
+        _debug(f"_ask: prompt written, waiting for input()")
     except Exception as e:
         _debug(f"_ask: write failed: {e}")
     try:
@@ -67,8 +68,8 @@ def _ask(prompt_str: str, default: str = "") -> str:
         _debug(f"_ask: got input={val!r}")
         return val if val else default
     except EOFError:
-        _debug("_ask: EOFError")
-        return default
+        _debug("_ask: EOFError — stdin closed, exiting cleanly")
+        raise SystemExit(0)
     except KeyboardInterrupt:
         _debug("_ask: KeyboardInterrupt")
         raise
@@ -124,11 +125,7 @@ def _sys_info() -> dict:
         info["user"] = os.environ.get("USERNAME", os.environ.get("USER", "user"))
     info["host"] = socket.gethostname()
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(0)
-        s.connect(("10.254.254.254", 1))
-        info["ip"] = s.getsockname()[0]
-        s.close()
+        info["ip"] = socket.gethostbyname(socket.gethostname())
     except Exception:
         info["ip"] = "127.0.0.1"
     info["time"] = datetime.datetime.now().strftime("%Y-%m-%d  %H:%M")
@@ -409,6 +406,8 @@ def run_tui() -> None:
             pass
         os.environ['PYTHONIOENCODING'] = 'utf-8'
         import sys
+        if hasattr(sys.stdin, 'reconfigure'):
+            sys.stdin.reconfigure(encoding='utf-8', errors='replace')
         if hasattr(sys.stdout, 'reconfigure'):
             sys.stdout.reconfigure(encoding='utf-8', errors='replace')
         if hasattr(sys.stderr, 'reconfigure'):

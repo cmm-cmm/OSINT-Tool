@@ -31,6 +31,11 @@ if sys.platform.startswith('win'):
     except Exception:
         pass
     os.environ['PYTHONIOENCODING'] = 'utf-8'
+    if hasattr(sys.stdin, 'reconfigure'):
+        try:
+            sys.stdin.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
     if hasattr(sys.stdout, 'reconfigure'):
         try:
             sys.stdout.reconfigure(encoding='utf-8', errors='replace')
