@@ -39,20 +39,41 @@ console = Console(legacy_windows=False)
 
 _MARKUP_RE = __import__("re").compile(r"\[/?[^\]]*\]")
 
+
+def _debug(msg: str) -> None:
+    """Append a trace message to ~/.osint-tool/tui_trace.log (always)."""
+    try:
+        from pathlib import Path
+        import datetime
+        log_path = Path.home() / ".osint-tool" / "tui_trace.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now().isoformat()} | {msg}\n")
+    except Exception:
+        pass
+
+
 def _ask(prompt_str: str, default: str = "") -> str:
     """Portable input using plain print+input — no Rich console involved in reading."""
     plain = _MARKUP_RE.sub("", prompt_str).strip()
+    _debug(f"_ask: prompt={plain!r}")
     try:
         sys.stdout.write(plain + " ")
         sys.stdout.flush()
-    except Exception:
-        pass
+    except Exception as e:
+        _debug(f"_ask: write failed: {e}")
     try:
         val = input().strip()
+        _debug(f"_ask: got input={val!r}")
         return val if val else default
     except EOFError:
+        _debug("_ask: EOFError")
         return default
     except KeyboardInterrupt:
+        _debug("_ask: KeyboardInterrupt")
+        raise
+    except BaseException as e:
+        _debug(f"_ask: {type(e).__name__}: {e}")
         raise
 
 # ── Security quotes (shown randomly in header) ────────────────────────────────
@@ -325,33 +346,46 @@ def _show_config_menu() -> None:
 
 def _run_module(module: OsintModule) -> None:
     """Run a module, catching all exceptions including SystemExit."""
+    _debug(f"_run_module: START {module.TITLE}")
     try:
         console.clear()
-    except Exception:
-        pass
+        _debug("_run_module: console.clear OK")
+    except Exception as e:
+        _debug(f"_run_module: console.clear FAILED: {e}")
 
     try:
+        _debug("_run_module: calling module.run()")
         module.run()
+        _debug("_run_module: module.run() returned normally")
     except KeyboardInterrupt:
+        _debug("_run_module: KeyboardInterrupt")
         try:
-            console.print(f"\n[{THEME_WARNING}]⚠ Cancelled.[/{THEME_WARNING}]")
+            print("\nCancelled.")
         except Exception:
-            print("\n⚠ Cancelled.")
-    except SystemExit:
-        pass
+            pass
+    except SystemExit as e:
+        _debug(f"_run_module: SystemExit(code={e.code}) — suppressed")
     except BaseException as e:
         import traceback
+        _debug(f"_run_module: BaseException {type(e).__name__}: {e}")
+        _debug(f"_run_module: traceback:\n{traceback.format_exc()}")
         try:
-            console.print(f"\n[{THEME_ERROR}]✗ {type(e).__name__}: {e}[/{THEME_ERROR}]")
-            console.print(f"[dim]{traceback.format_exc()}[/dim]")
-        except Exception:
-            print(f"\n✗ {type(e).__name__}: {e}")
+            print(f"\nError: {type(e).__name__}: {e}")
             traceback.print_exc()
+        except Exception:
+            pass
 
+    _debug("_run_module: about to call input() for press-enter")
     try:
-        input("\nPress Enter to return to menu...")
-    except Exception:
-        pass
+        sys.stdout.write("\nPress Enter to return to menu...")
+        sys.stdout.flush()
+        input()
+        _debug("_run_module: press-enter input returned")
+    except EOFError:
+        _debug("_run_module: press-enter EOFError")
+    except BaseException as e:
+        _debug(f"_run_module: press-enter {type(e).__name__}: {e}")
+    _debug("_run_module: END")
 
 
 # ── Main TUI menu ─────────────────────────────────────────────────────────────
@@ -380,21 +414,30 @@ def run_tui() -> None:
         if hasattr(sys.stderr, 'reconfigure'):
             sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
+    _debug("=== run_tui START ===")
+    _iter = 0
     while True:
+        _iter += 1
+        _debug(f"run_tui: iteration #{_iter}")
         try:
             _tui_loop_body()
-        except SystemExit:
+            _debug(f"run_tui: _tui_loop_body #{_iter} returned normally")
+        except SystemExit as e:
+            _debug(f"run_tui: SystemExit(code={e.code}) — propagating")
             raise
         except KeyboardInterrupt:
+            _debug("run_tui: KeyboardInterrupt — exiting")
             print("\nGoodbye! Stay legal.")
             raise SystemExit(0)
         except BaseException as e:
             import traceback
+            _debug(f"run_tui: BaseException {type(e).__name__}: {e}")
+            _debug(f"run_tui: traceback:\n{traceback.format_exc()}")
             _log_error(e)
             try:
-                console.print(f"[bold red]TUI Error: {type(e).__name__}: {e}[/bold red]")
-            except Exception:
                 print(f"\nTUI Error: {type(e).__name__}: {e}")
+            except Exception:
+                pass
 
 
 def _log_error(exc: BaseException) -> None:
