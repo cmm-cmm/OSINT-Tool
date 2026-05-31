@@ -239,7 +239,8 @@ class OsintGraph:
 
     def to_d3_html(self, title: str = "OSINT Graph") -> str:
         """Export a standalone interactive D3.js HTML graph."""
-        data = json.dumps(self.to_d3_data(), ensure_ascii=False)
+        # ensure_ascii=True + replace </ to prevent script-injection via </script>
+        data = json.dumps(self.to_d3_data(), ensure_ascii=True).replace("</", "<\\/")
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
         return f"""<!DOCTYPE html>
@@ -324,7 +325,11 @@ node.on("mouseover", (e, d) => {{
   tooltip.style.display = "block";
   tooltip.style.left = (e.clientX + 12) + "px";
   tooltip.style.top = (e.clientY - 10) + "px";
-  tooltip.innerHTML = `<strong style="color:${{d.color}}">${{d.icon}} ${{d.label}}</strong><br>Type: ${{d.type}}`;
+  tooltip.textContent = '';
+  const s = document.createElement('strong'); s.style.color = d.color;
+  s.textContent = (d.icon || '') + ' ' + d.label;
+  tooltip.appendChild(s);
+  tooltip.appendChild(document.createTextNode(' — ' + d.type));
 }}).on("mouseout", () => tooltip.style.display = "none");
 
 sim.on("tick", () => {{

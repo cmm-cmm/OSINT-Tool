@@ -372,7 +372,7 @@ def build_interactive_html_report(target: str, all_data: dict) -> str:
                 sh_html += f'<p class="danger">⚠ {len(vulns)} CVE(s): {_e(", ".join(vulns[:10]))}</p>'
             # Add port chart
             if ports:
-                chart_data = json.dumps(ports[:10])
+                chart_data = json.dumps(ports[:10]).replace("</", "<\\/")
                 sh_html += f"""
 <div class="chart-container no-print" style="height:200px">
   <canvas id="port-chart"></canvas>
