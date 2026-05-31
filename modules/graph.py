@@ -47,7 +47,7 @@ EDGE_TYPES = {
 
 class Node:
     def __init__(self, node_id: str, label: str, node_type: str = "target", **metadata):
-        self.id = hashlib.md5(node_id.encode()).hexdigest()[:8]
+        self.id = hashlib.sha256(node_id.encode()).hexdigest()[:8]
         self.raw_id = node_id
         self.label = label[:50]
         self.type = node_type
