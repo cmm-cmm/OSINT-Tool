@@ -251,7 +251,7 @@ async def _dispatch_module(module: str, target: str) -> dict:
     elif module == "email":
         from modules.email_recon import email_recon
         key = os.getenv("HIBP_API_KEY", "")
-        return email_recon(target, hibp_key=key) or {}
+        return email_recon(target, hibp_api_key=key) or {}
     elif module == "username":
         from modules.username_search import username_search
         return username_search(target) or {}
@@ -259,15 +259,16 @@ async def _dispatch_module(module: str, target: str) -> dict:
         from modules.ssl_analyzer import ssl_analyze
         return ssl_analyze(target) or {}
     elif module == "breach":
-        from modules.breach_check import check_breaches
-        return check_breaches(target) or {}
+        from modules.breach_check import breach_check
+        key = os.getenv("HIBP_API_KEY", "")
+        return breach_check(target, hibp_key=key) or {}
     elif module == "cloud":
         from modules.cloud_recon import cloud_recon
         return cloud_recon(target) or {}
     elif module == "social":
         from modules.social_recon import facebook_recon
         fb_key = os.getenv("FACEBOOK_SCRAPER_KEY", "")
-        return facebook_recon(target, scraper3_key=fb_key) or {}
+        return facebook_recon(target, fb_scraper_key=fb_key) or {}
     else:
         raise ValueError(f"Unknown module: {module}")
 

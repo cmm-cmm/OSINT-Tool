@@ -295,7 +295,7 @@ def _dispatch_module_sync(module: str, target: str) -> dict:
     elif module == "email":
         from modules.email_recon import email_recon
         key = os.getenv("HIBP_API_KEY", "")
-        return email_recon(target, hibp_key=key) or {}
+        return email_recon(target, hibp_api_key=key) or {}
     elif module == "username":
         from modules.username_search import username_search
         return username_search(target) or {}
@@ -303,7 +303,8 @@ def _dispatch_module_sync(module: str, target: str) -> dict:
         from modules.ssl_analyzer import ssl_analyze
         return ssl_analyze(target) or {}
     elif module == "breach":
-        from modules.breach_check import check_breaches
-        return check_breaches(target) or {}
+        from modules.breach_check import breach_check
+        key = os.getenv("HIBP_API_KEY", "")
+        return breach_check(target, hibp_key=key) or {}
     else:
         raise ValueError(f"Unknown module: {module}")
