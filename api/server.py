@@ -198,9 +198,9 @@ def get_history(limit: int = Query(default=50, le=500, description="Max records 
 # ── Report endpoints ──────────────────────────────────────────────────────────
 
 @app.get("/reports", tags=["Reports"])
-def list_reports(output_dir: str = Query(default="./reports")):
-    """List available report files."""
-    p = Path(output_dir)
+def list_reports():
+    """List available report files from the configured output directory."""
+    p = Path(os.getenv("OSINT_OUTPUT_DIR", "./reports"))
     if not p.exists():
         return {"reports": []}
     files = [

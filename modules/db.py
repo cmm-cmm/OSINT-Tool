@@ -150,17 +150,21 @@ class OsintDB:
         """Search scans by target string and/or module."""
         try:
             with self._connect() as conn:
-                sql = "SELECT id, target, modules, created_at, updated_at, tags FROM scans WHERE 1=1"
+                filters = []
                 params: list = []
                 if query:
-                    sql += " AND target LIKE ?"
+                    filters.append("target LIKE ?")
                     params.append(f"%{query}%")
                 if module:
-                    sql += " AND modules LIKE ?"
+                    filters.append("modules LIKE ?")
                     params.append(f'%"{module}"%')
-                sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+                where = ("WHERE " + " AND ".join(filters)) if filters else ""
+                base = "SELECT id, target, modules, created_at, updated_at, tags FROM scans"
                 params.extend([limit, offset])
-                rows = conn.execute(sql, params).fetchall()
+                rows = conn.execute(
+                    f"{base} {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                    params,
+                ).fetchall()
                 return [dict(r) for r in rows]
         except sqlite3.Error:
             return []

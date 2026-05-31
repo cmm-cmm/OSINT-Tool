@@ -4,7 +4,7 @@ Extends the base report module with Chart.js-powered visualizations.
 """
 import json
 import datetime
-from modules.report import _e
+from modules.report import _e, _kv_table, _table
 
 INTERACTIVE_CSS_EXTRA = """
     /* Search and filter bar */
@@ -336,7 +336,6 @@ def build_interactive_html_report(target: str, all_data: dict) -> str:
     if "whois" in all_data:
         w = all_data["whois"].get("whois", {})
         if w:
-            from modules.report import _kv_table
             content = _kv_table(
                 {k.replace("_", " ").title(): str(v) for k, v in w.items() if v and str(v) not in ("None", "[]")}
             )
@@ -345,7 +344,6 @@ def build_interactive_html_report(target: str, all_data: dict) -> str:
     if "dns" in all_data:
         records = all_data["dns"].get("records", {})
         if records:
-            from modules.report import _table
             rows = [(rtype, "<br>".join(vals) if isinstance(vals, list) else str(vals))
                     for rtype, vals in records.items()]
             sections.append(_section_interactive("DNS Records", _table(rows, ["Type", "Records"]), "network"))
@@ -359,14 +357,12 @@ def build_interactive_html_report(target: str, all_data: dict) -> str:
     if "ip" in all_data:
         geo = all_data["ip"].get("geo", {}).get("data", {})
         if geo:
-            from modules.report import _kv_table
             sections.append(_section_interactive("IP / Geolocation",
                 _kv_table({k.replace("_", " ").title(): str(v) for k, v in geo.items() if v}), "network"))
 
         shodan = all_data["ip"].get("shodan", {})
         if shodan and shodan.get("success"):
             ports = shodan.get("ports", [])
-            from modules.report import _table
             sh_rows = [("Open Ports", ", ".join(str(p) for p in ports) or "None")]
             if shodan.get("org"):
                 sh_rows.append(("Organization", _e(shodan["org"])))
@@ -404,7 +400,6 @@ new Chart(document.getElementById('port-chart'), {{
         hibp = e.get("hibp", {})
         breaches = hibp.get("breaches", [])
         if breaches:
-            from modules.report import _table
             rows = [(_e(b["name"]), _e(b.get("date", "—")),
                      f"{b.get('pwn_count', 0):,}", _e(", ".join(b.get("data_classes", [])[:4])))
                     for b in breaches]
@@ -425,7 +420,6 @@ new Chart(document.getElementById('port-chart'), {{
     if "username" in all_data:
         found = all_data["username"].get("found", [])
         if found:
-            from modules.report import _table
             rows = [(r["platform"], f'<a href="{_e(r["url"])}" target="_blank" class="found">{_e(r["url"])}</a>')
                     for r in found]
             sections.append(_section_interactive(
@@ -438,7 +432,6 @@ new Chart(document.getElementById('port-chart'), {{
                         "C": "#d29922", "D": "#f0883e", "F": "#f85149"}
         color = grade_colors.get(grade, "#e6edf3")
         ssl_html = f'<p>Grade: <strong style="color:{color};font-size:1.4rem">{_e(grade)}</strong></p>'
-        from modules.report import _kv_table
         cert = ssl_data.get("certificate", {})
         if cert:
             ssl_html += _kv_table({
@@ -457,7 +450,6 @@ new Chart(document.getElementById('port-chart'), {{
             if source.startswith("_") or not data:
                 continue
             if isinstance(data, dict) and data.get("found"):
-                from modules.report import _kv_table
                 content_parts.append(f"<h3 style='color:#79c0ff;margin-top:12px'>{_e(source)}</h3>")
                 content_parts.append(_kv_table(data))
         if content_parts:
@@ -467,7 +459,6 @@ new Chart(document.getElementById('port-chart'), {{
         for platform, data in all_data["social"].items():
             if not isinstance(data, dict):
                 continue
-            from modules.report import _kv_table
             filtered = {k: v for k, v in data.items()
                        if v and k not in ("dorks", "security_notes", "data_sources")
                        and not isinstance(v, (list, dict))}
@@ -481,7 +472,6 @@ new Chart(document.getElementById('port-chart'), {{
     if "secrets" in all_data:
         findings = all_data["secrets"].get("findings", [])
         if findings:
-            from modules.report import _table
             rows = [(_e(f.get("type", "")), _e(f.get("file", "")), _e(f.get("severity", "")))
                     for f in findings[:30]]
             html = _table(rows, ["Type", "File", "Severity"])
@@ -493,7 +483,6 @@ new Chart(document.getElementById('port-chart'), {{
             continue
         if not isinstance(value, dict) or not value:
             continue
-        from modules.report import _kv_table
         flat = {k.replace("_", " ").title(): str(v) for k, v in value.items()
                 if not isinstance(v, (list, dict)) and v}
         if flat:
