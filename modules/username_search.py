@@ -217,10 +217,16 @@ def run_maigret(username: str, timeout: int = 120) -> dict:
         return result
 
     result["available"] = True
+    from modules.utils import sanitize_for_shell
+    try:
+        safe_username = sanitize_for_shell(username)
+    except ValueError as ve:
+        result["error"] = f"Invalid username for subprocess: {ve}"
+        return result
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
             proc = subprocess.run(
-                ["maigret", username, "--json", "--folderoutput", tmpdir, "--no-color"],
+                ["maigret", safe_username, "--json", "--folderoutput", tmpdir, "--no-color"],
                 capture_output=True, text=True, timeout=timeout,
             )
             # Find the JSON report

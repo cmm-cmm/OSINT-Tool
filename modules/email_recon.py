@@ -257,8 +257,14 @@ def check_holehe(email: str, timeout: int = 60) -> dict:
 
     result["available"] = True
     try:
+        from modules.utils import sanitize_for_shell
+        try:
+            safe_email = sanitize_for_shell(email)
+        except ValueError as ve:
+            result["error"] = f"Invalid email for subprocess: {ve}"
+            return result
         proc = subprocess.run(
-            ["holehe", "--only-used", "--no-color", email],
+            ["holehe", "--only-used", "--no-color", safe_email],
             capture_output=True, text=True, timeout=timeout,
         )
         output = proc.stdout + proc.stderr
