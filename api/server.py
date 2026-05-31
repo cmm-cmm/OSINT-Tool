@@ -168,8 +168,14 @@ async def full_scan(request: ScanRequest):
 def cache_stats():
     """Return cache statistics."""
     stats = get_cache().stats()
-    return CacheStatsResponse(**{k: stats.get(k, 0 if "int" in type(stats.get(k, 0)).__name__ else {})
-                                  for k in CacheStatsResponse.model_fields})
+    return CacheStatsResponse(
+        total_entries=stats.get("total_entries", 0),
+        active_entries=stats.get("active_entries", 0),
+        expired_entries=stats.get("expired_entries", 0),
+        total_hits=stats.get("total_hits", 0),
+        by_module=stats.get("by_module", {}),
+        db_path=stats.get("db_path", ""),
+    )
 
 
 @app.delete("/cache", tags=["Cache"])
