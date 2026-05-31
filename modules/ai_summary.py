@@ -7,7 +7,6 @@ Set ANTHROPIC_API_KEY in .env
 """
 from __future__ import annotations
 import os
-import json
 import logging
 from typing import Any
 
@@ -43,7 +42,7 @@ def _prepare_context(target: str, all_data: dict, max_chars: int = 12000) -> str
 
     for section, data in all_data.items():
         add_section(section, data)
-        if sum(len(l) for l in lines) > max_chars:
+        if sum(len(line) for line in lines) > max_chars:
             lines.append("... [truncated for length]")
             break
 

@@ -2,11 +2,9 @@
 Interactive HTML report generator with search, filtering, charts, and timeline.
 Extends the base report module with Chart.js-powered visualizations.
 """
-import html as _html
 import json
 import datetime
-from pathlib import Path
-from modules.report import _e, _section, _table, _kv_table, build_html_report as _build_base
+from modules.report import _e
 
 INTERACTIVE_CSS_EXTRA = """
     /* Search and filter bar */
@@ -332,15 +330,9 @@ def build_interactive_html_report(target: str, all_data: dict) -> str:
     Build an interactive HTML report with search, filters, collapsible sections,
     summary cards, and Chart.js visualizations.
     """
-    from modules.report import build_html_report as _base
-
-    # Re-use base content sections but wrap them interactively
     sections = []
 
-    # Reuse the base builder to get section content, then re-wrap
-    base_html = _base(target, all_data)
-
-    # Instead of full re-parsing, build our own sections with categories
+    # Build sections with categories
     if "whois" in all_data:
         w = all_data["whois"].get("whois", {})
         if w:

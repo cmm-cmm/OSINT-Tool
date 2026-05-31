@@ -9,7 +9,6 @@ import json
 import hashlib
 import html as _html
 import datetime
-from typing import Any
 import logging
 
 logger = logging.getLogger("osint.graph")

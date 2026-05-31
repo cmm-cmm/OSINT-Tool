@@ -10,7 +10,6 @@ import datetime
 import hashlib
 import logging
 from pathlib import Path
-from typing import Any
 
 from modules.constants import USER_CONFIG_DIR
 

@@ -472,7 +472,7 @@ def generate_recon_links(target: str, ip_target: str = None) -> dict:
         "Wayback Machine": f"https://web.archive.org/web/*/{target}",
         "DNSDumpster": f"https://dnsdumpster.com/ (search: {target})",
         "AbuseIPDB": f"https://www.abuseipdb.com/check/{ip}",
-        "FOFA": f"https://en.fofa.info/result?qbase64={requests.utils.quote(f'ip=\"{ip}\"')}",
+        "FOFA": "https://en.fofa.info/result?qbase64=" + requests.utils.quote('ip="%s"' % ip),
         "GreyNoise": f"https://viz.greynoise.io/ip/{ip}",
     }
 

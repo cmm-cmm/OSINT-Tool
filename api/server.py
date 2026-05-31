@@ -15,9 +15,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+    from fastapi import FastAPI, HTTPException, Query
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import HTMLResponse, FileResponse
     import uvicorn
 except ImportError:
     raise ImportError(
@@ -28,7 +27,7 @@ except ImportError:
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-from api.models import ScanRequest, ScanResponse, CacheStatsResponse, HistoryEntry, ErrorResponse
+from api.models import ScanRequest, ScanResponse, CacheStatsResponse, HistoryEntry
 from modules.cache import get_cache, OsintCache
 from modules.utils import read_scan_history, append_scan_history
 from modules.report import save_report
@@ -113,7 +112,6 @@ async def full_scan(request: ScanRequest):
     cache = get_cache() if request.use_cache else None
 
     for module in request.modules:
-        t0 = time.monotonic()
         cache_key = OsintCache.make_key(module, request.target) if cache else None
 
         if cache and cache_key:

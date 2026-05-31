@@ -10,8 +10,7 @@ import json
 import hashlib
 import logging
 import datetime
-from pathlib import Path
-from typing import Callable, Any
+from typing import Callable
 
 from modules.constants import USER_CONFIG_DIR
 from modules.exceptions import SchedulerError

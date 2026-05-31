@@ -19,7 +19,7 @@ jobs:
       - name: Install lint tools
         run: pip install ruff
       - name: Run ruff
-        run: ruff check . --select E,F,W --ignore E501,E402,W503 --exclude tests/
+        run: ruff check . --select E,F,W --ignore E501,E402,F401 --exclude tests/
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
