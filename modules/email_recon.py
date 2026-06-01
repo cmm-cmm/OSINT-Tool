@@ -112,7 +112,7 @@ def check_smtp_verify(email: str) -> dict:
 
 def check_gravatar(email: str) -> dict:
     """Check if email has a Gravatar profile (public)."""
-    email_hash = hashlib.md5(email.strip().lower().encode(), usedforsecurity=False).hexdigest()  # noqa: S324
+    email_hash = hashlib.md5(email.strip().lower().encode()).hexdigest()
     url = f"https://www.gravatar.com/{email_hash}.json"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=8)

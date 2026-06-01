@@ -44,16 +44,16 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-_cors_origins_env = os.getenv("CORS_ORIGINS", "")
-_cors_origins: list[str] = [
-    o.strip() for o in _cors_origins_env.split(",")
-    if o.strip() and o.strip() not in ("*", "")
-]
-if not _cors_origins:
-    _cors_origins = ["http://localhost:8000"]
+def _safe_cors_origins() -> list[str]:
+    """Parse CORS_ORIGINS env var, accepting only well-formed http(s) origins."""
+    _origin_re = re.compile(r'^https?://[a-zA-Z0-9.\-]+(:\d{1,5})?$')
+    raw = os.getenv("CORS_ORIGINS", "")
+    validated = [o.strip() for o in raw.split(",") if _origin_re.match(o.strip())]
+    return validated if validated else ["http://localhost:8000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,  # NOSONAR - wildcard explicitly excluded above
+    allow_origins=_safe_cors_origins(),
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )

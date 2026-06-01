@@ -37,7 +37,7 @@ def check_pwned_password(password: str) -> dict:
     """
     result = {"exposed": False, "count": 0, "error": None}
     try:
-        sha1 = hashlib.sha1(password.encode("utf-8"), usedforsecurity=False).hexdigest().upper()  # NOSONAR - SHA1 required by HIBP k-anonymity API
+        sha1 = hashlib.sha1(password.encode("utf-8")).hexdigest().upper()
         prefix, suffix = sha1[:5], sha1[5:]
         r = requests.get(
             f"https://api.pwnedpasswords.com/range/{prefix}",

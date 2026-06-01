@@ -209,6 +209,7 @@ def get_headers_info(domain: str) -> dict:
     """Grab HTTP headers from target for tech fingerprinting and security scoring."""
     import ipaddress as _ipaddress
     import re as _re2
+    import socket as _socket2
     from urllib.parse import urlparse as _urlparse
     _DOM_RE2 = _re2.compile(
         r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?'
@@ -216,7 +217,7 @@ def get_headers_info(domain: str) -> dict:
     )
     try:
         _addr = _ipaddress.ip_address(domain)
-        if _addr.is_private or _addr.is_loopback or _addr.is_link_local:
+        if _addr.is_private or _addr.is_loopback or _addr.is_link_local or _addr.is_multicast:
             return {}
         _safe_host = str(_addr)
     except ValueError:
@@ -224,10 +225,18 @@ def get_headers_info(domain: str) -> dict:
         _safe_host = _parsed_h.hostname or ""
         if not _safe_host or not _DOM_RE2.match(_safe_host):
             return {}
+        try:
+            _resolved = _socket2.gethostbyname(_safe_host)
+            _final = _ipaddress.ip_address(_resolved)
+            if _final.is_private or _final.is_loopback or _final.is_link_local or _final.is_multicast:
+                return {}
+            _safe_host = str(_final)
+        except (OSError, ValueError):
+            return {}
 
     result = {}
     try:
-        resp = requests.head(f"https://{_safe_host}", headers=HEADERS, timeout=8, allow_redirects=True, verify=True)  # NOSONAR
+        resp = requests.head(f"https://{_safe_host}", headers=HEADERS, timeout=8, allow_redirects=True, verify=True)
         interesting = [
             "server", "x-powered-by", "x-generator", "cf-ray",
             "x-frame-options", "strict-transport-security",
@@ -310,6 +319,7 @@ def detect_tech_stack(domain: str, existing_headers: dict | None = None) -> dict
     """Detect CMS, framework, server tech from HTTP headers + HTML body."""
     import ipaddress as _ipaddress
     import re as _re3
+    import socket as _socket3
     from urllib.parse import urlparse as _urlparse3
     _DOM_RE3 = _re3.compile(
         r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?'
@@ -317,13 +327,21 @@ def detect_tech_stack(domain: str, existing_headers: dict | None = None) -> dict
     )
     try:
         _addr3 = _ipaddress.ip_address(domain)
-        if _addr3.is_private or _addr3.is_loopback or _addr3.is_link_local:
+        if _addr3.is_private or _addr3.is_loopback or _addr3.is_link_local or _addr3.is_multicast:
             return {"technologies": []}
         _safe_host3 = str(_addr3)
     except ValueError:
         _parsed_h3 = _urlparse3(f"https://{domain}/")
         _safe_host3 = _parsed_h3.hostname or ""
         if not _safe_host3 or not _DOM_RE3.match(_safe_host3):
+            return {"technologies": []}
+        try:
+            _resolved3 = _socket3.gethostbyname(_safe_host3)
+            _final3 = _ipaddress.ip_address(_resolved3)
+            if _final3.is_private or _final3.is_loopback or _final3.is_link_local or _final3.is_multicast:
+                return {"technologies": []}
+            _safe_host3 = str(_final3)
+        except (OSError, ValueError):
             return {"technologies": []}
 
     detected = []
@@ -336,7 +354,7 @@ def detect_tech_stack(domain: str, existing_headers: dict | None = None) -> dict
     # Try to fetch HTML body
     body = ""
     try:
-        resp = requests.get(f"https://{_safe_host3}", headers=HEADERS, timeout=8, allow_redirects=True, verify=True)  # NOSONAR
+        resp = requests.get(f"https://{_safe_host3}", headers=HEADERS, timeout=8, allow_redirects=True, verify=True)
         body = resp.text.lower()[:50000]  # cap at 50KB
         for h in resp.headers:
             headers_lower.setdefault(h.lower(), resp.headers[h].lower())
