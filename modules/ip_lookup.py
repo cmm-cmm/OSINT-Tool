@@ -227,10 +227,7 @@ def get_headers_info(domain: str) -> dict:
 
     result = {}
     try:
-        resp = requests.head(  # NOSONAR python:S5144 - host validated via ipaddress/regex above
-            f"https://{_safe_host}", headers=HEADERS, timeout=8,
-            allow_redirects=True, verify=True
-        )
+        resp = requests.head(f"https://{_safe_host}", headers=HEADERS, timeout=8, allow_redirects=True, verify=True)  # NOSONAR
         interesting = [
             "server", "x-powered-by", "x-generator", "cf-ray",
             "x-frame-options", "strict-transport-security",
@@ -339,10 +336,7 @@ def detect_tech_stack(domain: str, existing_headers: dict | None = None) -> dict
     # Try to fetch HTML body
     body = ""
     try:
-        resp = requests.get(  # NOSONAR python:S5144 - host validated via ipaddress/regex above
-            f"https://{_safe_host3}", headers=HEADERS, timeout=8,
-            allow_redirects=True, verify=True
-        )
+        resp = requests.get(f"https://{_safe_host3}", headers=HEADERS, timeout=8, allow_redirects=True, verify=True)  # NOSONAR
         body = resp.text.lower()[:50000]  # cap at 50KB
         for h in resp.headers:
             headers_lower.setdefault(h.lower(), resp.headers[h].lower())

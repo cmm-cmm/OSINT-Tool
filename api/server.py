@@ -45,13 +45,15 @@ app = FastAPI(
 )
 
 _cors_origins_env = os.getenv("CORS_ORIGINS", "")
-_cors_origins = [
+_cors_origins: list[str] = [
     o.strip() for o in _cors_origins_env.split(",")
-    if o.strip() and o.strip() != "*"
-] or ["http://localhost:8000"]
+    if o.strip() and o.strip() not in ("*", "")
+]
+if not _cors_origins:
+    _cors_origins = ["http://localhost:8000"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
+    allow_origins=_cors_origins,  # NOSONAR - wildcard explicitly excluded above
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
