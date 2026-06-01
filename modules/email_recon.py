@@ -273,8 +273,8 @@ def check_holehe(email: str, timeout: int = 60) -> dict:
         # Parse holehe output: lines with [+] indicate found
         found = []
         checked = 0
-        for line in output.splitlines():
-            line = line.strip()
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
             if "[+]" in line:
                 site = line.replace("[+]", "").strip().split()[0] if line.replace("[+]", "").strip() else "Unknown"
                 found.append(site)

@@ -207,35 +207,48 @@ def port_scan(host: str, ports: list | None = None, max_workers: int = 50) -> di
 
 def get_headers_info(domain: str) -> dict:
     """Grab HTTP headers from target for tech fingerprinting and security scoring."""
+    import ipaddress as _ipaddress
+    import re as _re2
+    from urllib.parse import urlparse as _urlparse
+    _DOM_RE2 = _re2.compile(
+        r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?'
+        r'(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
+    )
+    try:
+        _addr = _ipaddress.ip_address(domain)
+        if _addr.is_private or _addr.is_loopback or _addr.is_link_local:
+            return {}
+        _safe_host = str(_addr)
+    except ValueError:
+        _parsed_h = _urlparse(f"https://{domain}/")
+        _safe_host = _parsed_h.hostname or ""
+        if not _safe_host or not _DOM_RE2.match(_safe_host):
+            return {}
+
     result = {}
     for scheme in ("https", "http"):
-        for verify_ssl in (True, False):
-            try:
-                resp = requests.head(
-                    f"{scheme}://{domain}", headers=HEADERS, timeout=8,
-                    allow_redirects=True, verify=verify_ssl
-                )
-                interesting = [
-                    "server", "x-powered-by", "x-generator", "cf-ray",
-                    "x-frame-options", "strict-transport-security",
-                    "content-security-policy", "x-content-type-options",
-                    "referrer-policy", "permissions-policy", "x-xss-protection",
-                ]
-                for h in interesting:
-                    if h in resp.headers:
-                        result[h] = resp.headers[h]
-                result["_status_code"] = resp.status_code
-                result["_final_url"] = str(resp.url)
-                result["_scheme"] = scheme
-                if not verify_ssl:
-                    result["_ssl_warning"] = "SSL certificate verification skipped"
-                return result
-            except requests.exceptions.SSLError:
-                if verify_ssl:
-                    continue  # retry without SSL verification
-                break
-            except Exception:
-                break
+        try:
+            resp = requests.head(
+                f"{scheme}://{_safe_host}", headers=HEADERS, timeout=8,
+                allow_redirects=True, verify=True
+            )
+            interesting = [
+                "server", "x-powered-by", "x-generator", "cf-ray",
+                "x-frame-options", "strict-transport-security",
+                "content-security-policy", "x-content-type-options",
+                "referrer-policy", "permissions-policy", "x-xss-protection",
+            ]
+            for h in interesting:
+                if h in resp.headers:
+                    result[h] = resp.headers[h]
+            result["_status_code"] = resp.status_code
+            result["_final_url"] = str(resp.url)
+            result["_scheme"] = scheme
+            return result
+        except requests.exceptions.SSLError:
+            continue  # SSL cert issue - try next scheme
+        except Exception:
+            continue
     return result
 
 
@@ -302,6 +315,24 @@ def score_security_headers(headers: dict) -> dict:
 
 def detect_tech_stack(domain: str, existing_headers: dict | None = None) -> dict:
     """Detect CMS, framework, server tech from HTTP headers + HTML body."""
+    import ipaddress as _ipaddress
+    import re as _re3
+    from urllib.parse import urlparse as _urlparse3
+    _DOM_RE3 = _re3.compile(
+        r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?'
+        r'(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
+    )
+    try:
+        _addr3 = _ipaddress.ip_address(domain)
+        if _addr3.is_private or _addr3.is_loopback or _addr3.is_link_local:
+            return {"technologies": []}
+        _safe_host3 = str(_addr3)
+    except ValueError:
+        _parsed_h3 = _urlparse3(f"https://{domain}/")
+        _safe_host3 = _parsed_h3.hostname or ""
+        if not _safe_host3 or not _DOM_RE3.match(_safe_host3):
+            return {"technologies": []}
+
     detected = []
     headers_lower = {}
 
@@ -314,7 +345,7 @@ def detect_tech_stack(domain: str, existing_headers: dict | None = None) -> dict
     for scheme in ("https", "http"):
         try:
             resp = requests.get(
-                f"{scheme}://{domain}", headers=HEADERS, timeout=8,
+                f"{scheme}://{_safe_host3}", headers=HEADERS, timeout=8,
                 allow_redirects=True, verify=True
             )
             body = resp.text.lower()[:50000]  # cap at 50KB

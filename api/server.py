@@ -13,6 +13,7 @@ import datetime
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -43,7 +44,8 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-_cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+_cors_origins_env = os.getenv("CORS_ORIGINS", "")
+_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()] or ["http://localhost:8000"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -63,7 +65,7 @@ _USERNAME_RE = re.compile(r'^[a-zA-Z0-9._\-@+]{1,100}$')
 
 
 def _validate_scan_target(target: str, scan_type: str) -> str:
-    """Validate scan target to prevent SSRF. Raises HTTPException on invalid input."""
+    """Validate and sanitize scan target to prevent SSRF. Raises HTTPException on invalid input."""
     if not target:
         raise HTTPException(status_code=400, detail="Target cannot be empty")
     target = target.strip()
@@ -75,23 +77,29 @@ def _validate_scan_target(target: str, scan_type: str) -> str:
             addr = ipaddress.ip_address(target)
             if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast:
                 raise HTTPException(status_code=400, detail="Private/internal addresses not allowed")
+            return str(addr)
         except ValueError:
             if not _DOMAIN_RE.match(target):
                 raise HTTPException(status_code=400, detail="Invalid domain or IP address format")
+            return urlparse(f"https://{target}/").hostname or target
     elif scan_type == "ip":
         try:
             addr = ipaddress.ip_address(target)
             if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast:
                 raise HTTPException(status_code=400, detail="Private/internal IP addresses not allowed")
+            return str(addr)
         except ValueError:
             if not _DOMAIN_RE.match(target):
                 raise HTTPException(status_code=400, detail="Invalid IP address or hostname format")
+            return urlparse(f"https://{target}/").hostname or target
     elif scan_type == "email":
         if not _EMAIL_RE.match(target):
             raise HTTPException(status_code=400, detail="Invalid email address format")
+        return target
     elif scan_type in ("username", "breach"):
         if not _EMAIL_RE.match(target) and not _USERNAME_RE.match(target):
             raise HTTPException(status_code=400, detail="Invalid username or email format")
+        return target
 
     return target
 
@@ -157,7 +165,7 @@ async def full_scan(request: ScanRequest):
 
     Supported modules: whois, dns, ip, email, username, ssl, breach, cloud, social
     """
-    _validate_scan_target(request.target, "domain")
+    validated_target = _validate_scan_target(request.target, "domain")
     scan_id = str(uuid.uuid4())[:8]
     started_at = datetime.datetime.now().isoformat()
     start_ms = time.monotonic()
@@ -165,7 +173,7 @@ async def full_scan(request: ScanRequest):
     cache = get_cache() if request.use_cache else None
 
     for module in request.modules:
-        cache_key = OsintCache.make_key(module, request.target) if cache else None
+        cache_key = OsintCache.make_key(module, validated_target) if cache else None
 
         if cache and cache_key:
             cached = cache.get(cache_key)
@@ -174,27 +182,27 @@ async def full_scan(request: ScanRequest):
                 continue
 
         try:
-            data = await _dispatch_module(module, request.target)
+            data = await _dispatch_module(module, validated_target)
             results[module] = data
             if cache and cache_key and data:
                 cache.set(cache_key, data, ttl=request.cache_ttl, module=module)
-            append_scan_history(module, request.target, "ok")
+            append_scan_history(module, validated_target, "ok")
         except Exception as exc:
             results[module] = {"error": str(exc)}
-            append_scan_history(module, request.target, "error")
+            append_scan_history(module, validated_target, "error")
 
     # Generate reports
     output_dir = os.getenv("OSINT_OUTPUT_DIR", "./reports")
     report_paths = {}
     try:
-        paths = save_report(request.target, results, output_dir)
+        paths = save_report(validated_target, results, output_dir)
         report_paths.update(paths)
     except Exception:
         pass
 
     if request.output_format == "interactive":
         try:
-            ipaths = save_interactive_report(request.target, results, output_dir)
+            ipaths = save_interactive_report(validated_target, results, output_dir)
             report_paths.update(ipaths)
         except Exception:
             pass
@@ -203,7 +211,7 @@ async def full_scan(request: ScanRequest):
     duration_ms = int((time.monotonic() - start_ms) * 1000)
 
     return ScanResponse(
-        target=request.target,
+        target=validated_target,
         scan_id=scan_id,
         started_at=started_at,
         completed_at=completed_at,
