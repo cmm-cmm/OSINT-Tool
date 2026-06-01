@@ -99,8 +99,10 @@ def ip_geolocation(ip_or_domain: str) -> dict:
     """Free geolocation via ip-api.com (no API key needed, 45 req/min limit).
     Includes exponential backoff on 429 rate-limit responses.
     """
+    from urllib.parse import quote as _url_quote
+    _safe = _url_quote(ip_or_domain, safe='.-_:')
     url = (
-        f"http://ip-api.com/json/{ip_or_domain}"
+        f"http://ip-api.com/json/{_safe}"
         "?fields=status,message,country,countryCode,region,regionName,city,zip,"
         "lat,lon,timezone,isp,org,as,asname,reverse,mobile,proxy,hosting,query"
     )
@@ -127,7 +129,8 @@ def ip_geolocation(ip_or_domain: str) -> dict:
 def reverse_ip_lookup(ip: str) -> list:
     """Find domains hosted on same IP via HackerTarget free API."""
     try:
-        url = f"https://api.hackertarget.com/reverseiplookup/?q={ip}"
+        from urllib.parse import quote as _url_quote
+        url = f"https://api.hackertarget.com/reverseiplookup/?q={_url_quote(ip, safe='.-_:')}"
         resp = requests.get(url, headers=HEADERS, timeout=10)
         if resp.status_code == 200 and "error" not in resp.text.lower():
             domains = [d.strip() for d in resp.text.splitlines() if d.strip()]
@@ -168,7 +171,7 @@ def scan_port(host: str, port: int, timeout: float = 1.0) -> dict:
     return result
 
 
-def port_scan(host: str, ports: list = None, max_workers: int = 50) -> dict:
+def port_scan(host: str, ports: list | None = None, max_workers: int = 50) -> dict:
     """Scan multiple ports concurrently for open services."""
     if ports is None:
         ports = COMMON_PORTS
@@ -297,7 +300,7 @@ def score_security_headers(headers: dict) -> dict:
     return {"score": score, "grade": grade, "present": present, "missing": missing}
 
 
-def detect_tech_stack(domain: str, existing_headers: dict = None) -> dict:
+def detect_tech_stack(domain: str, existing_headers: dict | None = None) -> dict:
     """Detect CMS, framework, server tech from HTTP headers + HTML body."""
     detected = []
     headers_lower = {}
@@ -337,9 +340,10 @@ def detect_tech_stack(domain: str, existing_headers: dict = None) -> dict:
 
 def check_virustotal(target: str, api_key: str) -> dict:
     """Query VirusTotal v3 API for domain/IP threat intel (1000 free req/day)."""
+    from urllib.parse import quote as _url_quote
     is_ip = not any(c.isalpha() for c in target)
     endpoint = "ip_addresses" if is_ip else "domains"
-    url = f"https://www.virustotal.com/api/v3/{endpoint}/{target}"
+    url = f"https://www.virustotal.com/api/v3/{endpoint}/{_url_quote(target, safe='.-_:')}"
     try:
         resp = requests.get(url, headers={"x-apikey": api_key, **HEADERS}, timeout=12)
         if resp.status_code == 200:
@@ -459,7 +463,7 @@ def check_abuseipdb(ip: str, api_key: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def generate_recon_links(target: str, ip_target: str = None) -> dict:
+def generate_recon_links(target: str, ip_target: str | None = None) -> dict:
     encoded = requests.utils.quote(target)
     ip = ip_target or target
     return {
@@ -570,7 +574,7 @@ def rdap_lookup(ip_or_domain: str) -> dict:
     return result
 
 
-def ip_lookup(target: str, virustotal_key: str = None, shodan_key: str = None, abuseipdb_key: str = None,
+def ip_lookup(target: str, virustotal_key: str | None = None, shodan_key: str | None = None, abuseipdb_key: str | None = None,
               enable_port_scan: bool = True) -> dict:
     geo = ip_geolocation(target)
     rev = []

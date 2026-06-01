@@ -36,7 +36,7 @@ def check_mx_record(domain: str) -> list:
         return []
 
 
-def check_hibp(email: str, api_key: str = None) -> dict:
+def check_hibp(email: str, api_key: str | None = None) -> dict:
     """
     Check HaveIBeenPwned for breaches.
     Requires a free API key from https://haveibeenpwned.com/API/Key
@@ -50,7 +50,8 @@ def check_hibp(email: str, api_key: str = None) -> dict:
         return result
 
     try:
-        url = f"https://haveibeenpwned.com/api/v3/breachedaccount/{email}"
+        from urllib.parse import quote as _url_quote
+        url = f"https://haveibeenpwned.com/api/v3/breachedaccount/{_url_quote(email, safe='')}"
         headers = {**HEADERS, "hibp-api-key": api_key}
         resp = requests.get(url, headers=headers, timeout=10, params={"truncateResponse": False})
         if resp.status_code == 200:
@@ -176,9 +177,10 @@ def check_hunter(domain: str, api_key: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def check_emailrep(email: str, api_key: str = None) -> dict:
+def check_emailrep(email: str, api_key: str | None = None) -> dict:
     """Query EmailRep.io for email reputation and risk signals (1000 free req/day)."""
-    url = f"https://emailrep.io/{email}"
+    from urllib.parse import quote as _url_quote
+    url = f"https://emailrep.io/{_url_quote(email, safe='')}"
     headers = {**HEADERS}
     if api_key:
         headers["Key"] = api_key
@@ -287,7 +289,7 @@ def check_holehe(email: str, timeout: int = 60) -> dict:
     return result
 
 
-def email_recon(email: str, hibp_api_key: str = None, hunter_key: str = None, emailrep_key: str = None, do_holehe: bool = False) -> dict:
+def email_recon(email: str, hibp_api_key: str | None = None, hunter_key: str | None = None, emailrep_key: str | None = None, do_holehe: bool = False) -> dict:
     if not validate_email(email):
         return {"error": "Invalid email format"}
 

@@ -4,7 +4,9 @@ OSINT Tool REST API Server
 Exposes core OSINT modules as a RESTful HTTP API using FastAPI.
 Start with: uvicorn api.server:app --reload --port 8000
 """
+import ipaddress
 import os
+import re
 import uuid
 import time
 import datetime
@@ -49,6 +51,50 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Input validation regexes for SSRF prevention
+_DOMAIN_RE = re.compile(
+    r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?'
+    r'(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
+)
+_EMAIL_RE = re.compile(
+    r'^[a-zA-Z0-9._%+\-]{1,64}@[a-zA-Z0-9.\-]{1,253}\.[a-zA-Z]{2,}$'
+)
+_USERNAME_RE = re.compile(r'^[a-zA-Z0-9._\-@+]{1,100}$')
+
+
+def _validate_scan_target(target: str, scan_type: str) -> str:
+    """Validate scan target to prevent SSRF. Raises HTTPException on invalid input."""
+    if not target:
+        raise HTTPException(status_code=400, detail="Target cannot be empty")
+    target = target.strip()
+    if len(target) > 253:
+        raise HTTPException(status_code=400, detail="Target too long (max 253 characters)")
+
+    if scan_type in ("domain", "ssl", "whois", "dns"):
+        try:
+            addr = ipaddress.ip_address(target)
+            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast:
+                raise HTTPException(status_code=400, detail="Private/internal addresses not allowed")
+        except ValueError:
+            if not _DOMAIN_RE.match(target):
+                raise HTTPException(status_code=400, detail="Invalid domain or IP address format")
+    elif scan_type == "ip":
+        try:
+            addr = ipaddress.ip_address(target)
+            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast:
+                raise HTTPException(status_code=400, detail="Private/internal IP addresses not allowed")
+        except ValueError:
+            if not _DOMAIN_RE.match(target):
+                raise HTTPException(status_code=400, detail="Invalid IP address or hostname format")
+    elif scan_type == "email":
+        if not _EMAIL_RE.match(target):
+            raise HTTPException(status_code=400, detail="Invalid email address format")
+    elif scan_type in ("username", "breach"):
+        if not _EMAIL_RE.match(target) and not _USERNAME_RE.match(target):
+            raise HTTPException(status_code=400, detail="Invalid username or email format")
+
+    return target
+
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
@@ -68,35 +114,40 @@ def health() -> dict:
 async def scan_domain(target: str = Query(..., description="Domain or IP to scan"),
                       use_cache: bool = True):
     """Run domain/IP intelligence scan (WHOIS, DNS, IP geo)."""
-    return await _run_module("domain", target, use_cache)
+    safe_target = _validate_scan_target(target, "domain")
+    return await _run_module("domain", safe_target, use_cache)
 
 
 @app.post("/scan/email", response_model=dict, tags=["Scan"])
 async def scan_email(target: str = Query(..., description="Email address to scan"),
                      use_cache: bool = True):
     """Run email OSINT (validation, breach check, SMTP verify)."""
-    return await _run_module("email", target, use_cache)
+    safe_target = _validate_scan_target(target, "email")
+    return await _run_module("email", safe_target, use_cache)
 
 
 @app.post("/scan/username", response_model=dict, tags=["Scan"])
 async def scan_username(target: str = Query(..., description="Username to search"),
                         use_cache: bool = True):
     """Search username across 40+ platforms."""
-    return await _run_module("username", target, use_cache)
+    safe_target = _validate_scan_target(target, "username")
+    return await _run_module("username", safe_target, use_cache)
 
 
 @app.post("/scan/ip", response_model=dict, tags=["Scan"])
 async def scan_ip(target: str = Query(..., description="IP address to scan"),
                   use_cache: bool = True):
     """Run IP geolocation and intelligence scan."""
-    return await _run_module("ip", target, use_cache)
+    safe_target = _validate_scan_target(target, "ip")
+    return await _run_module("ip", safe_target, use_cache)
 
 
 @app.post("/scan/breach", response_model=dict, tags=["Scan"])
 async def scan_breach(target: str = Query(..., description="Email or username to check"),
                       use_cache: bool = True):
     """Check for data breaches."""
-    return await _run_module("breach", target, use_cache)
+    safe_target = _validate_scan_target(target, "breach")
+    return await _run_module("breach", safe_target, use_cache)
 
 
 @app.post("/scan", response_model=ScanResponse, tags=["Scan"])
@@ -106,6 +157,7 @@ async def full_scan(request: ScanRequest):
 
     Supported modules: whois, dns, ip, email, username, ssl, breach, cloud, social
     """
+    _validate_scan_target(request.target, "domain")
     scan_id = str(uuid.uuid4())[:8]
     started_at = datetime.datetime.now().isoformat()
     start_ms = time.monotonic()

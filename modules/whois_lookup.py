@@ -121,9 +121,11 @@ COMMON_SUBDOMAINS = [
 
 def check_rdap(domain: str) -> dict:
     """Query RDAP for richer registrant/contact data (often bypasses GDPR-redacted WHOIS)."""
+    from urllib.parse import quote as _url_quote
+    _safe_domain = _url_quote(domain, safe='.-')
     rdap_urls = [
-        f"https://rdap.org/domain/{domain}",
-        f"https://rdap.verisign.com/com/v1/domain/{domain}",
+        f"https://rdap.org/domain/{_safe_domain}",
+        f"https://rdap.verisign.com/com/v1/domain/{_safe_domain}",
     ]
     for url in rdap_urls:
         try:
@@ -402,7 +404,8 @@ def subdomain_enum(domain: str) -> dict:
     # ── Step 1: crt.sh Certificate Transparency ────────────────────────────
     crtsh_subs = set()
     try:
-        url = f"https://crt.sh/?q=%.{domain}&output=json"
+        from urllib.parse import quote as _url_quote
+        url = f"https://crt.sh/?q=%.{_url_quote(domain, safe='.-')}&output=json"
         resp = requests.get(url, headers=HEADERS, timeout=15)
         if resp.status_code == 200:
             for entry in resp.json():
