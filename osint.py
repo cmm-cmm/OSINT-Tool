@@ -1060,7 +1060,9 @@ def cmd_api(host: str, port: int, reload: bool):
 
 @cli.command("graph")
 @click.argument("target")
-@click.option("--report", "report_json", default=None, help="Path to existing JSON report to visualize")
+@click.option("--report", "report_json", default=None,
+              type=click.Path(exists=True, readable=True, dir_okay=False),
+              help="Path to existing JSON report to visualize")
 @click.option("--format", "fmt", default="d3,mermaid", show_default=True,
               help="Output formats: d3,mermaid,json (comma-separated)")
 @click.option("--output", "-o", default=None, help="Output directory (default: OSINT_OUTPUT_DIR)")
@@ -1116,7 +1118,9 @@ def cmd_graph(target: str, report_json: str | None, fmt: str, output: str | None
 
 @cli.command("ai-summary")
 @click.argument("target")
-@click.option("--report", "report_json", default=None, help="Path to existing JSON report")
+@click.option("--report", "report_json", default=None,
+              type=click.Path(exists=True, readable=True, dir_okay=False),
+              help="Path to existing JSON report")
 @click.option("--model", default="claude-sonnet-4-6", show_default=True, help="Claude model to use")
 @click.option("--save", is_flag=True, help="Save summary as .md file in output dir")
 @click.option("--output", "-o", default=None, help="Output directory")

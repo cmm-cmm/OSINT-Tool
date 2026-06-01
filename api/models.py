@@ -18,7 +18,7 @@ class ModuleResult(BaseModel):
     module: str
     target: str
     status: str  # "success", "error", "skipped"
-    data: dict[str, Any] = {}
+    data: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
     cached: bool = False
     duration_ms: int = 0
@@ -32,7 +32,7 @@ class ScanResponse(BaseModel):
     duration_ms: int
     modules_run: list[str]
     results: dict[str, Any]
-    report_paths: dict[str, str] = {}
+    report_paths: dict[str, str] = Field(default_factory=dict)
 
 
 class CacheStatsResponse(BaseModel):
@@ -40,7 +40,7 @@ class CacheStatsResponse(BaseModel):
     active_entries: int
     expired_entries: int
     total_hits: int
-    by_module: dict[str, int] = {}
+    by_module: dict[str, int] = Field(default_factory=dict)
     db_path: str
 
 

@@ -8,7 +8,6 @@ actions that integrate seamlessly into the interactive menu.
 
 from __future__ import annotations
 
-import os
 import shlex
 import shutil
 import subprocess
