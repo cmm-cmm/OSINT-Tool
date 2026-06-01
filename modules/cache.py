@@ -91,7 +91,7 @@ class OsintCache:
 
     def set(self, key: str, value: Any, ttl: int | None = None, module: str = "") -> bool:
         """Store value with TTL. Returns True on success."""
-        ttl = ttl if ttl is not None else self.default_ttl
+        effective_ttl = ttl if ttl is not None else self.default_ttl
         try:
             serialized = json.dumps(value, ensure_ascii=False, default=str)
             now = time.time()
@@ -100,7 +100,7 @@ class OsintCache:
                     """INSERT OR REPLACE INTO cache
                        (key, value, expires_at, created_at, module, hits)
                        VALUES (?, ?, ?, ?, ?, 0)""",
-                    (key, serialized, now + ttl, now, module),
+                    (key, serialized, now + effective_ttl, now, module),
                 )
             return True
         except (sqlite3.Error, TypeError) as e:

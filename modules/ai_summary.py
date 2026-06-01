@@ -81,8 +81,8 @@ def generate_ai_summary(
     Returns:
         dict with 'summary' (str), 'model', 'tokens_used', 'error' (if any)
     """
-    api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
+    effective_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+    if not effective_key:
         return {
             "summary": None,
             "error": "No Anthropic API key. Set ANTHROPIC_API_KEY in .env",
@@ -102,7 +102,7 @@ def generate_ai_summary(
     user_message = f"Analyze the following OSINT scan data and produce an intelligence brief:\n\n{context}"
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(api_key=effective_key)
         response = client.messages.create(
             model=model,
             max_tokens=2048,

@@ -349,24 +349,24 @@ svg.call(d3.zoom().scaleExtent([0.2, 4])
         """Save graph in specified formats. Returns dict of format -> path."""
         import re
         from pathlib import Path
-        formats = formats or ["d3", "mermaid", "json"]
+        active_formats = formats or ["d3", "mermaid", "json"]
         safe = re.sub(r'[^\w\-.]', '_', target)[:60]
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
         paths = {}
 
-        if "d3" in formats:
+        if "d3" in active_formats:
             p = out / f"graph_{safe}_{ts}.html"
             p.write_text(self.to_d3_html(target), encoding="utf-8")
             paths["d3_html"] = str(p)
 
-        if "mermaid" in formats:
+        if "mermaid" in active_formats:
             p = out / f"graph_{safe}_{ts}.mmd"
             p.write_text(self.to_mermaid(), encoding="utf-8")
             paths["mermaid"] = str(p)
 
-        if "json" in formats:
+        if "json" in active_formats:
             p = out / f"graph_{safe}_{ts}.json"
             p.write_text(json.dumps(self.to_d3_data(), indent=2, ensure_ascii=False), encoding="utf-8")
             paths["json"] = str(p)

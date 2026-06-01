@@ -96,7 +96,7 @@ class OsintDB:
         """
         scan_id = _scan_id(target, modules)
         now = datetime.datetime.utcnow().isoformat(timespec="seconds")
-        tags = tags or []
+        tag_list = tags or []
 
         try:
             with self._connect() as conn:
@@ -108,7 +108,7 @@ class OsintDB:
                         conn.execute(
                             "UPDATE scans SET data=?, updated_at=?, tags=?, notes=? WHERE id=?",
                             (json.dumps(data, default=str), now,
-                             json.dumps(tags), notes, scan_id),
+                             json.dumps(tag_list), notes, scan_id),
                         )
                         logger.debug("DB: updated scan %s", scan_id)
                         return scan_id
@@ -118,7 +118,7 @@ class OsintDB:
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (scan_id, target, json.dumps(sorted(modules)),
                      json.dumps(data, default=str), now, now,
-                     json.dumps(tags), notes),
+                     json.dumps(tag_list), notes),
                 )
                 self._extract_findings(conn, scan_id, data, now)
                 logger.debug("DB: saved scan %s for %s", scan_id, target)
