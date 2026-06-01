@@ -346,11 +346,10 @@ def print_whois(data: dict):
     table.add_column("Value", style="white")
 
     w = data.get("whois", {})
-    for field, value in w.items():
-        if value and value not in ("None", "[]", "{}"):
-            if isinstance(value, list):
-                value = ", ".join(str(v) for v in value[:5])
-            table.add_row(field.replace("_", " ").title(), str(value))
+    for field, raw_value in w.items():
+        if raw_value and raw_value not in ("None", "[]", "{}"):
+            display_value = ", ".join(str(v) for v in raw_value[:5]) if isinstance(raw_value, list) else raw_value
+            table.add_row(field.replace("_", " ").title(), str(display_value))
 
     console.print(table)
 

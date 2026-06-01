@@ -226,29 +226,25 @@ def get_headers_info(domain: str) -> dict:
             return {}
 
     result = {}
-    for scheme in ("https", "http"):
-        try:
-            resp = requests.head(
-                f"{scheme}://{_safe_host}", headers=HEADERS, timeout=8,
-                allow_redirects=True, verify=True
-            )
-            interesting = [
-                "server", "x-powered-by", "x-generator", "cf-ray",
-                "x-frame-options", "strict-transport-security",
-                "content-security-policy", "x-content-type-options",
-                "referrer-policy", "permissions-policy", "x-xss-protection",
-            ]
-            for h in interesting:
-                if h in resp.headers:
-                    result[h] = resp.headers[h]
-            result["_status_code"] = resp.status_code
-            result["_final_url"] = str(resp.url)
-            result["_scheme"] = scheme
-            return result
-        except requests.exceptions.SSLError:
-            continue  # SSL cert issue - try next scheme
-        except Exception:
-            continue
+    try:
+        resp = requests.head(  # NOSONAR python:S5144 - host validated via ipaddress/regex above
+            f"https://{_safe_host}", headers=HEADERS, timeout=8,
+            allow_redirects=True, verify=True
+        )
+        interesting = [
+            "server", "x-powered-by", "x-generator", "cf-ray",
+            "x-frame-options", "strict-transport-security",
+            "content-security-policy", "x-content-type-options",
+            "referrer-policy", "permissions-policy", "x-xss-protection",
+        ]
+        for h in interesting:
+            if h in resp.headers:
+                result[h] = resp.headers[h]
+        result["_status_code"] = resp.status_code
+        result["_final_url"] = str(resp.url)
+        result["_scheme"] = "https"
+    except Exception:
+        pass
     return result
 
 
@@ -342,23 +338,16 @@ def detect_tech_stack(domain: str, existing_headers: dict | None = None) -> dict
 
     # Try to fetch HTML body
     body = ""
-    for scheme in ("https", "http"):
-        try:
-            resp = requests.get(
-                f"{scheme}://{_safe_host3}", headers=HEADERS, timeout=8,
-                allow_redirects=True, verify=True
-            )
-            body = resp.text.lower()[:50000]  # cap at 50KB
-            for h in resp.headers:
-                headers_lower.setdefault(h.lower(), resp.headers[h].lower())
-            break
-        except requests.exceptions.SSLError:
-            # Retry over plain HTTP if HTTPS has cert issues
-            continue
-        except Exception:
-            break
-    if body:
-        pass  # already fetched
+    try:
+        resp = requests.get(  # NOSONAR python:S5144 - host validated via ipaddress/regex above
+            f"https://{_safe_host3}", headers=HEADERS, timeout=8,
+            allow_redirects=True, verify=True
+        )
+        body = resp.text.lower()[:50000]  # cap at 50KB
+        for h in resp.headers:
+            headers_lower.setdefault(h.lower(), resp.headers[h].lower())
+    except Exception:
+        pass
 
     combined = body + " " + " ".join(headers_lower.values())
 
