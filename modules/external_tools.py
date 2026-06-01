@@ -8,7 +8,7 @@ actions that integrate seamlessly into the interactive menu.
 
 from __future__ import annotations
 
-import shlex
+import os
 import shutil
 import subprocess
 import sys
@@ -104,7 +104,7 @@ class ExternalTool:
 
         cmd = self._effective_install_cmd
         console.print(f"[cyan]→ {cmd}[/cyan]")
-        ret = subprocess.run(shlex.split(cmd), check=False).returncode
+        ret = os.system(cmd)
         if self.is_installed:
             console.print(f"[{THEME_SUCCESS}]✔ {self.name} installed successfully.[/{THEME_SUCCESS}]")
         else:
@@ -125,7 +125,7 @@ class ExternalTool:
         if cmd.startswith("pip install"):
             cmd = cmd.replace("pip install", "pip install --upgrade")
         console.print(f"[cyan]→ {cmd}[/cyan]")
-        subprocess.run(shlex.split(cmd), check=False)
+        os.system(cmd)
         console.print(f"[{THEME_SUCCESS}]✔ Update complete.[/{THEME_SUCCESS}]")
 
     def run(self) -> None:

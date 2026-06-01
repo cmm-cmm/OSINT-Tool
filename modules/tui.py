@@ -514,7 +514,7 @@ def _handle_filtered_results(results: list[OsintModule], title: str) -> None:
 
 def _install_all_missing_deps() -> None:
     """Collect and install all missing optional dependencies across all modules."""
-    import shutil, os, shlex, subprocess
+    import shutil, os
 
     all_missing: list[str] = []
     for m in ALL_MODULES:
@@ -539,10 +539,10 @@ def _install_all_missing_deps() -> None:
         if dep in OPTIONAL_TOOLS:
             cmd = OPTIONAL_TOOLS[dep]["install"]
             console.print(f"[dim]→ {cmd}[/dim]")
-            subprocess.run(shlex.split(cmd), check=False)
+            os.system(cmd)
         else:
             console.print(f"[dim]→ pip install {dep}[/dim]")
-            subprocess.run([sys.executable, "-m", "pip", "install", dep], check=False)
+            os.system(f"{sys.executable} -m pip install {dep}")
 
     console.print(f"\n[{THEME_SUCCESS}]✔ Done![/{THEME_SUCCESS}]")
     Prompt.ask("[dim]Press Enter to return[/dim]", default="")

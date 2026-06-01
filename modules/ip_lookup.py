@@ -99,10 +99,8 @@ def ip_geolocation(ip_or_domain: str) -> dict:
     """Free geolocation via ip-api.com (no API key needed, 45 req/min limit).
     Includes exponential backoff on 429 rate-limit responses.
     """
-    from urllib.parse import quote as _url_quote
-    _safe = _url_quote(ip_or_domain, safe='.-_:')
     url = (
-        f"http://ip-api.com/json/{_safe}"
+        f"http://ip-api.com/json/{ip_or_domain}"
         "?fields=status,message,country,countryCode,region,regionName,city,zip,"
         "lat,lon,timezone,isp,org,as,asname,reverse,mobile,proxy,hosting,query"
     )
@@ -129,8 +127,7 @@ def ip_geolocation(ip_or_domain: str) -> dict:
 def reverse_ip_lookup(ip: str) -> list:
     """Find domains hosted on same IP via HackerTarget free API."""
     try:
-        from urllib.parse import quote as _url_quote
-        url = f"https://api.hackertarget.com/reverseiplookup/?q={_url_quote(ip, safe='.-_:')}"
+        url = f"https://api.hackertarget.com/reverseiplookup/?q={ip}"
         resp = requests.get(url, headers=HEADERS, timeout=10)
         if resp.status_code == 200 and "error" not in resp.text.lower():
             domains = [d.strip() for d in resp.text.splitlines() if d.strip()]
@@ -372,10 +369,9 @@ def detect_tech_stack(domain: str, existing_headers: dict | None = None) -> dict
 
 def check_virustotal(target: str, api_key: str) -> dict:
     """Query VirusTotal v3 API for domain/IP threat intel (1000 free req/day)."""
-    from urllib.parse import quote as _url_quote
     is_ip = not any(c.isalpha() for c in target)
     endpoint = "ip_addresses" if is_ip else "domains"
-    url = f"https://www.virustotal.com/api/v3/{endpoint}/{_url_quote(target, safe='.-_:')}"
+    url = f"https://www.virustotal.com/api/v3/{endpoint}/{target}"
     try:
         resp = requests.get(url, headers={"x-apikey": api_key, **HEADERS}, timeout=12)
         if resp.status_code == 200:

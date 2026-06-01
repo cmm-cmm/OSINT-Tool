@@ -55,7 +55,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_safe_cors_origins(),
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
 )
 
 # Input validation regexes for SSRF prevention
@@ -77,7 +77,7 @@ def _validate_scan_target(target: str, scan_type: str) -> str:
     if len(target) > 253:
         raise HTTPException(status_code=400, detail="Target too long (max 253 characters)")
 
-    if scan_type in ("domain", "ssl", "whois", "dns"):
+    if scan_type in ("domain", "ssl", "whois", "dns", "ip"):
         try:
             addr = ipaddress.ip_address(target)
             if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast:
@@ -85,17 +85,7 @@ def _validate_scan_target(target: str, scan_type: str) -> str:
             return str(addr)
         except ValueError:
             if not _DOMAIN_RE.match(target):
-                raise HTTPException(status_code=400, detail="Invalid domain or IP address format")
-            return urlparse(f"https://{target}/").hostname or target
-    elif scan_type == "ip":
-        try:
-            addr = ipaddress.ip_address(target)
-            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast:
-                raise HTTPException(status_code=400, detail="Private/internal IP addresses not allowed")
-            return str(addr)
-        except ValueError:
-            if not _DOMAIN_RE.match(target):
-                raise HTTPException(status_code=400, detail="Invalid IP address or hostname format")
+                raise HTTPException(status_code=400, detail="Invalid domain, IP, or hostname format")
             return urlparse(f"https://{target}/").hostname or target
     elif scan_type == "email":
         if not _EMAIL_RE.match(target):

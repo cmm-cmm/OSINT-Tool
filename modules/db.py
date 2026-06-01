@@ -150,21 +150,33 @@ class OsintDB:
         """Search scans by target string and/or module."""
         try:
             with self._connect() as conn:
-                filters = []
-                params: list = []
-                if query:
-                    filters.append("target LIKE ?")
-                    params.append(f"%{query}%")
-                if module:
-                    filters.append("modules LIKE ?")
-                    params.append(f'%"{module}"%')
-                where = ("WHERE " + " AND ".join(filters)) if filters else ""
-                base = "SELECT id, target, modules, created_at, updated_at, tags FROM scans"
-                params.extend([limit, offset])
-                rows = conn.execute(
-                    f"{base} {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                    params,
-                ).fetchall()
+                if query and module:
+                    rows = conn.execute(
+                        "SELECT id, target, modules, created_at, updated_at, tags FROM scans"
+                        " WHERE target LIKE ? AND modules LIKE ?"
+                        " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                        [f"%{query}%", f'%"{module}"%', limit, offset],
+                    ).fetchall()
+                elif query:
+                    rows = conn.execute(
+                        "SELECT id, target, modules, created_at, updated_at, tags FROM scans"
+                        " WHERE target LIKE ?"
+                        " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                        [f"%{query}%", limit, offset],
+                    ).fetchall()
+                elif module:
+                    rows = conn.execute(
+                        "SELECT id, target, modules, created_at, updated_at, tags FROM scans"
+                        " WHERE modules LIKE ?"
+                        " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                        [f'%"{module}"%', limit, offset],
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT id, target, modules, created_at, updated_at, tags FROM scans"
+                        " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                        [limit, offset],
+                    ).fetchall()
                 return [dict(r) for r in rows]
         except sqlite3.Error:
             return []
@@ -184,16 +196,27 @@ class OsintDB:
         """Return findings, optionally filtered by scan ID and/or severity."""
         try:
             with self._connect() as conn:
-                sql = "SELECT * FROM findings WHERE 1=1"
-                params: list = []
-                if scan_id:
-                    sql += " AND scan_id = ?"
-                    params.append(scan_id)
-                if severity:
-                    sql += " AND severity = ?"
-                    params.append(severity)
-                sql += " ORDER BY created_at DESC"
-                return [dict(r) for r in conn.execute(sql, params).fetchall()]
+                if scan_id and severity:
+                    rows = conn.execute(
+                        "SELECT * FROM findings WHERE scan_id = ? AND severity = ?"
+                        " ORDER BY created_at DESC",
+                        [scan_id, severity],
+                    ).fetchall()
+                elif scan_id:
+                    rows = conn.execute(
+                        "SELECT * FROM findings WHERE scan_id = ? ORDER BY created_at DESC",
+                        [scan_id],
+                    ).fetchall()
+                elif severity:
+                    rows = conn.execute(
+                        "SELECT * FROM findings WHERE severity = ? ORDER BY created_at DESC",
+                        [severity],
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM findings ORDER BY created_at DESC"
+                    ).fetchall()
+                return [dict(r) for r in rows]
         except sqlite3.Error:
             return []
 

@@ -50,8 +50,7 @@ def check_hibp(email: str, api_key: str | None = None) -> dict:
         return result
 
     try:
-        from urllib.parse import quote as _url_quote
-        url = f"https://haveibeenpwned.com/api/v3/breachedaccount/{_url_quote(email, safe='')}"
+        url = f"https://haveibeenpwned.com/api/v3/breachedaccount/{email}"
         headers = {**HEADERS, "hibp-api-key": api_key}
         resp = requests.get(url, headers=headers, timeout=10, params={"truncateResponse": False})
         if resp.status_code == 200:
@@ -179,8 +178,7 @@ def check_hunter(domain: str, api_key: str) -> dict:
 
 def check_emailrep(email: str, api_key: str | None = None) -> dict:
     """Query EmailRep.io for email reputation and risk signals (1000 free req/day)."""
-    from urllib.parse import quote as _url_quote
-    url = f"https://emailrep.io/{_url_quote(email, safe='')}"
+    url = f"https://emailrep.io/{email}"
     headers = {**HEADERS}
     if api_key:
         headers["Key"] = api_key
