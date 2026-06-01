@@ -819,17 +819,11 @@ def run_theharvester(domain: str, sources: str = "all", timeout: int = 60) -> di
         result["note"] = "theHarvester not installed. Run: pip install theHarvester"
         return result
     result["available"] = True
-    from modules.utils import sanitize_for_shell
-    try:
-        safe_domain = sanitize_for_shell(domain)
-    except ValueError as ve:
-        result["error"] = f"Invalid domain for subprocess: {ve}"
-        return result
     with _tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
         tmpfile = tf.name
     try:
         _subprocess.run(
-            ["theHarvester", "-d", safe_domain, "-b", sources, "-f", tmpfile.replace(".json", "")],
+            ["theHarvester", "-d", domain, "-b", sources, "-f", tmpfile.replace(".json", "")],
             capture_output=True, text=True, timeout=timeout,
         )
         if _os.path.exists(tmpfile):
@@ -856,15 +850,9 @@ def run_subfinder(domain: str, timeout: int = 60) -> dict:
         result["note"] = "subfinder not installed. See: https://github.com/projectdiscovery/subfinder"
         return result
     result["available"] = True
-    from modules.utils import sanitize_for_shell
-    try:
-        safe_domain = sanitize_for_shell(domain)
-    except ValueError as ve:
-        result["error"] = f"Invalid domain for subprocess: {ve}"
-        return result
     try:
         proc = _subprocess.run(
-            ["subfinder", "-d", safe_domain, "-silent", "-json"],
+            ["subfinder", "-d", domain, "-silent", "-json"],
             capture_output=True, text=True, timeout=timeout,
         )
         subdomains = []

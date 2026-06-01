@@ -538,11 +538,10 @@ def _install_all_missing_deps() -> None:
         console.print(f"\n[bold cyan]({i}/{len(all_missing)})[/bold cyan] {dep}")
         if dep in OPTIONAL_TOOLS:
             cmd = OPTIONAL_TOOLS[dep]["install"]
-            console.print(f"[dim]→ {cmd}[/dim]")
-            os.system(cmd)
         else:
-            console.print(f"[dim]→ pip install {dep}[/dim]")
-            os.system(f"{sys.executable} -m pip install {dep}")
+            cmd = f"pip install {dep}"
+        console.print(f"[dim]→ {cmd}[/dim]")
+        os.system(cmd)
 
     console.print(f"\n[{THEME_SUCCESS}]✔ Done![/{THEME_SUCCESS}]")
     Prompt.ask("[dim]Press Enter to return[/dim]", default="")
