@@ -1150,7 +1150,6 @@ def cmd_ai_summary(target: str, report_json: str | None, model: str, save: bool,
         console.print(f"[cyan]>> No report provided — running quick scan on {target}...[/cyan]")
         try:
             from modules.whois_lookup import whois_lookup, dns_enum
-            from modules.ip_lookup import ip_lookup
             all_data["whois"] = whois_lookup(target) or {}  # NOSONAR
             all_data["dns"] = dns_enum(target) or {}  # NOSONAR
         except Exception as e:

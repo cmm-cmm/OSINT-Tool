@@ -171,7 +171,7 @@ def run_scheduled_scan(job_id: str, on_change: Callable[[str, dict, dict], None]
     all_data = {}
     for module in scan.modules:
         try:
-            all_data[module] = _dispatch_module_sync(module, scan.target)
+            all_data[module] = _dispatch_module_sync(module, scan.target)  # NOSONAR
         except Exception as exc:
             logger.warning("Module %s failed for %s: %s", module, scan.target, exc)
             all_data[module] = {"error": str(exc)}
