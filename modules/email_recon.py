@@ -36,7 +36,7 @@ def check_mx_record(domain: str) -> list:
         return []
 
 
-def check_hibp(email: str, api_key: str = None) -> dict:
+def check_hibp(email: str, api_key: str | None = None) -> dict:
     """
     Check HaveIBeenPwned for breaches.
     Requires a free API key from https://haveibeenpwned.com/API/Key
@@ -176,7 +176,7 @@ def check_hunter(domain: str, api_key: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def check_emailrep(email: str, api_key: str = None) -> dict:
+def check_emailrep(email: str, api_key: str | None = None) -> dict:
     """Query EmailRep.io for email reputation and risk signals (1000 free req/day)."""
     url = f"https://emailrep.io/{email}"
     headers = {**HEADERS}
@@ -265,8 +265,8 @@ def check_holehe(email: str, timeout: int = 60) -> dict:
         # Parse holehe output: lines with [+] indicate found
         found = []
         checked = 0
-        for line in output.splitlines():
-            line = line.strip()
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
             if "[+]" in line:
                 site = line.replace("[+]", "").strip().split()[0] if line.replace("[+]", "").strip() else "Unknown"
                 found.append(site)
@@ -281,7 +281,7 @@ def check_holehe(email: str, timeout: int = 60) -> dict:
     return result
 
 
-def email_recon(email: str, hibp_api_key: str = None, hunter_key: str = None, emailrep_key: str = None, do_holehe: bool = False) -> dict:
+def email_recon(email: str, hibp_api_key: str | None = None, hunter_key: str | None = None, emailrep_key: str | None = None, do_holehe: bool = False) -> dict:
     if not validate_email(email):
         return {"error": "Invalid email format"}
 

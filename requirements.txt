@@ -20,3 +20,20 @@ geopy>=2.4.0
 # holehe>=1.20               # Email → 120+ site registration check
 # maigret>=0.4.4             # Username OSINT across 3000+ sites
 # theHarvester>=4.4.0        # Email/subdomain/IP gathering from public sources
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest>=8.0.0
+pytest-cov>=5.0.0
+pytest-mock>=3.14.0
+ruff>=0.4.0
+bandit>=1.7.0
+
+# ── API Server (optional) ─────────────────────────────────────────────────────
+# pip install fastapi uvicorn[standard] pydantic
+# fastapi>=0.111.0
+# uvicorn[standard]>=0.30.0
+# pydantic>=2.7.0
+
+# ── AI Summarization (optional) ───────────────────────────────────────────────
+# pip install anthropic
+# anthropic>=0.28.0

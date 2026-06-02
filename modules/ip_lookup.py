@@ -168,7 +168,7 @@ def scan_port(host: str, port: int, timeout: float = 1.0) -> dict:
     return result
 
 
-def port_scan(host: str, ports: list = None, max_workers: int = 50) -> dict:
+def port_scan(host: str, ports: list | None = None, max_workers: int = 50) -> dict:
     """Scan multiple ports concurrently for open services."""
     if ports is None:
         ports = COMMON_PORTS
@@ -459,7 +459,7 @@ def check_abuseipdb(ip: str, api_key: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def generate_recon_links(target: str, ip_target: str = None) -> dict:
+def generate_recon_links(target: str, ip_target: str | None = None) -> dict:
     encoded = requests.utils.quote(target)
     ip = ip_target or target
     return {
@@ -472,7 +472,7 @@ def generate_recon_links(target: str, ip_target: str = None) -> dict:
         "Wayback Machine": f"https://web.archive.org/web/*/{target}",
         "DNSDumpster": f"https://dnsdumpster.com/ (search: {target})",
         "AbuseIPDB": f"https://www.abuseipdb.com/check/{ip}",
-        "FOFA": f"https://en.fofa.info/result?qbase64={requests.utils.quote(f'ip=\"{ip}\"')}",
+        "FOFA": "https://en.fofa.info/result?qbase64=" + requests.utils.quote('ip="%s"' % ip),
         "GreyNoise": f"https://viz.greynoise.io/ip/{ip}",
     }
 
@@ -570,7 +570,7 @@ def rdap_lookup(ip_or_domain: str) -> dict:
     return result
 
 
-def ip_lookup(target: str, virustotal_key: str = None, shodan_key: str = None, abuseipdb_key: str = None,
+def ip_lookup(target: str, virustotal_key: str | None = None, shodan_key: str | None = None, abuseipdb_key: str | None = None,
               enable_port_scan: bool = True) -> dict:
     geo = ip_geolocation(target)
     rev = []

@@ -1028,5 +1028,458 @@ def cmd_menu():
     run_tui()
 
 
+# ── Phase 3: REST API Server ──────────────────────────────────────────────────
+
+@cli.command("api")
+@click.option("--host", default="0.0.0.0", show_default=True, help="Bind host")
+@click.option("--port", default=8000, show_default=True, help="Bind port")
+@click.option("--reload", is_flag=True, help="Enable auto-reload (development)")
+def cmd_api(host: str, port: int, reload: bool):
+    """Start the OSINT Tool REST API server (requires fastapi + uvicorn).
+
+    \b
+    Install:  pip install fastapi uvicorn[standard] pydantic
+    Start:    python osint.py api --port 8000
+    Docs:     http://localhost:8000/docs
+
+    Example: python osint.py api --host 127.0.0.1 --port 9000
+    """
+    try:
+        import uvicorn
+    except ImportError:
+        console.print("[bold red]✘ uvicorn not installed.[/bold red]")
+        console.print("[dim]Install with: pip install fastapi uvicorn[standard] pydantic[/dim]")
+        raise SystemExit(1)
+
+    console.print(f"[bold cyan]>> Starting OSINT Tool API on {host}:{port}[/bold cyan]")
+    console.print(f"[dim]Docs: http://{host}:{port}/docs[/dim]\n")
+    uvicorn.run("api.server:app", host=host, port=port, reload=reload)
+
+
+# ── Phase 4: Graph Visualization ─────────────────────────────────────────────
+
+@cli.command("graph")
+@click.argument("target")
+@click.option("--report", "report_json", default=None,
+              type=click.Path(exists=True, readable=True, dir_okay=False),
+              help="Path to existing JSON report to visualize")
+@click.option("--format", "fmt", default="d3,mermaid", show_default=True,
+              help="Output formats: d3,mermaid,json (comma-separated)")
+@click.option("--output", "-o", default=None, help="Output directory (default: OSINT_OUTPUT_DIR)")
+def cmd_graph(target: str, report_json: str | None, fmt: str, output: str | None):
+    """Generate an interactive relationship graph from scan or report data.
+
+    \b
+    Sources:
+      - From existing JSON report: --report path/to/report.json
+      - Auto-scan target: run whois + dns then graph
+
+    Example: python osint.py graph example.com --format d3,mermaid
+    """
+    from modules.graph import OsintGraph
+    from modules.report import save_report
+
+    output_dir = output or os.getenv("OSINT_OUTPUT_DIR", "./reports")
+    formats = [f.strip() for f in fmt.split(",")]
+
+    all_data: dict = {}
+
+    if report_json:
+        console.print(f"[cyan]>> Loading report from {report_json}...[/cyan]")
+        try:
+            with open(report_json, encoding="utf-8") as f:
+                all_data = json.load(f)
+        except Exception as e:
+            console.print(f"[bold red]✘ Failed to load report: {e}[/bold red]")
+            raise SystemExit(1)
+    else:
+        console.print(f"[cyan]>> Running quick scan on {target} for graph data...[/cyan]")
+        try:
+            from modules.whois_lookup import whois_lookup, dns_enum
+            all_data["whois"] = whois_lookup(target) or {}  # NOSONAR
+            all_data["dns"] = dns_enum(target) or {}  # NOSONAR
+        except Exception as e:
+            console.print(f"[bold yellow]⚠ Scan failed: {e}[/bold yellow]")
+
+    g = OsintGraph()
+    g.from_scan_data(target, all_data)
+
+    if not g.nodes:
+        console.print("[yellow]⚠ No nodes found in data — graph would be empty.[/yellow]")
+        raise SystemExit(0)
+
+    paths = g.save(target, output_dir=output_dir, formats=formats)
+    console.print(f"\n[bold green]✔ Graph generated:[/bold green] {len(g.nodes)} nodes, {len(g.edges)} edges")
+    for fmt_name, path in paths.items():
+        console.print(f"  [dim]{fmt_name}:[/dim] [cyan]{path}[/cyan]")
+
+
+# ── Phase 4: AI Intelligence Summary ─────────────────────────────────────────
+
+@cli.command("ai-summary")
+@click.argument("target")
+@click.option("--report", "report_json", default=None,
+              type=click.Path(exists=True, readable=True, dir_okay=False),
+              help="Path to existing JSON report")
+@click.option("--model", default="claude-sonnet-4-6", show_default=True, help="Claude model to use")
+@click.option("--save", is_flag=True, help="Save summary as .md file in output dir")
+@click.option("--output", "-o", default=None, help="Output directory")
+def cmd_ai_summary(target: str, report_json: str | None, model: str, save: bool, output: str | None):
+    """Generate an AI-powered intelligence brief using Claude (requires ANTHROPIC_API_KEY).
+
+    \b
+    Install:  pip install anthropic
+    Setup:    Add ANTHROPIC_API_KEY=sk-ant-... to .env
+
+    Example: python osint.py ai-summary example.com --report reports/osint_example.json
+    """
+    from modules.ai_summary import generate_ai_summary, print_ai_summary
+
+    output_dir = output or os.getenv("OSINT_OUTPUT_DIR", "./reports")
+    all_data: dict = {}
+
+    if report_json:
+        console.print(f"[cyan]>> Loading report: {report_json}[/cyan]")
+        try:
+            with open(report_json, encoding="utf-8") as f:
+                all_data = json.load(f)
+        except Exception as e:
+            console.print(f"[bold red]✘ Failed to load report: {e}[/bold red]")
+            raise SystemExit(1)
+    else:
+        console.print(f"[cyan]>> No report provided — running quick scan on {target}...[/cyan]")
+        try:
+            from modules.whois_lookup import whois_lookup, dns_enum
+            all_data["whois"] = whois_lookup(target) or {}  # NOSONAR
+            all_data["dns"] = dns_enum(target) or {}  # NOSONAR
+        except Exception as e:
+            console.print(f"[bold yellow]⚠ Scan failed: {e}[/bold yellow]")
+
+    console.print(f"[cyan]>> Generating AI summary with {model}...[/cyan]")
+    result = generate_ai_summary(target, all_data, model=model)
+    print_ai_summary(result)
+
+    if save and result.get("summary"):
+        from pathlib import Path
+        import re
+        safe = re.sub(r'[^\w\-.]', '_', target)[:60]
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        md_path = out / f"ai_brief_{safe}_{ts}.md"
+        md_path.write_text(
+            f"# AI Intelligence Brief: {target}\n\n"
+            f"*Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Model: {model}*\n\n"
+            f"{result['summary']}\n",
+            encoding="utf-8",
+        )
+        console.print(f"\n[bold green]✔ Saved:[/bold green] [cyan]{md_path}[/cyan]")
+
+
+# ── Phase 3: Database Management ─────────────────────────────────────────────
+
+@cli.group("db")
+def cmd_db():
+    """Manage the OSINT Tool scan database (SQLite backend)."""
+
+
+@cmd_db.command("stats")
+def db_stats():
+    """Show database statistics."""
+    from modules.db import get_db
+    db = get_db()
+    stats = db.stats()
+    console.print("\n[bold cyan]>> Database Statistics[/bold cyan]")
+    console.print(f"  Total scans    : [cyan]{stats.get('total_scans', 0)}[/cyan]")
+    console.print(f"  Unique targets : [cyan]{stats.get('unique_targets', 0)}[/cyan]")
+    console.print(f"  Total findings : [cyan]{stats.get('total_findings', 0)}[/cyan]")
+    findings_by_sev = stats.get("findings_by_severity", {})
+    if findings_by_sev:
+        console.print("  Findings by severity:")
+        sev_colors = {"critical": "bold red", "high": "red", "medium": "yellow",
+                      "low": "cyan", "info": "dim"}
+        for sev, count in sorted(findings_by_sev.items()):
+            color = sev_colors.get(sev, "white")
+            console.print(f"    [{color}]{sev}[/{color}]: {count}")
+    console.print(f"  DB path        : [dim]{stats.get('db_path', '?')}[/dim]")
+
+
+@cmd_db.command("list")
+@click.option("--limit", default=20, show_default=True)
+def db_list(limit: int):
+    """List recent scan targets."""
+    from modules.db import get_db
+    db = get_db()
+    targets = db.list_targets(limit=limit)
+    if not targets:
+        console.print("[yellow]No scans in database.[/yellow]")
+        return
+    console.print(f"\n[bold cyan]>> Recent Targets ({len(targets)}):[/bold cyan]")
+    for t in targets:
+        console.print(f"  [cyan]{t}[/cyan]")
+
+
+@cmd_db.command("search")
+@click.argument("query")
+@click.option("--limit", default=10, show_default=True)
+def db_search(query: str, limit: int):
+    """Search scan history by target."""
+    from modules.db import get_db
+    db = get_db()
+    results = db.search(query=query, limit=limit)
+    if not results:
+        console.print(f"[yellow]No results for query: {query}[/yellow]")
+        return
+    console.print(f"\n[bold cyan]>> Search Results for '{query}':[/bold cyan]")
+    for r in results:
+        mods = json.dumps(r.get("modules", [])) if isinstance(r.get("modules"), list) else str(r.get("modules", ""))
+        console.print(f"  [cyan]{r['target']}[/cyan]  [dim]{r.get('updated_at', '')[:16]}[/dim]  modules: {mods}")
+
+
+# ── Phase 4: Scheduled Scans ─────────────────────────────────────────────────
+
+@cli.group("schedule")
+def cmd_schedule():
+    """Manage scheduled OSINT scans (recurring, change-detection)."""
+
+
+@cmd_schedule.command("add")
+@click.option("--target", required=True, help="Target to scan (domain, email, etc.)")
+@click.option("--modules", default="whois,dns", show_default=True,
+              help="Comma-separated modules: whois,dns,ip,email,username,ssl,breach")
+@click.option("--interval", default=24, show_default=True, help="Scan interval in hours")
+@click.option("--output", "-o", default=None, help="Output directory for reports")
+@click.option("--tags", default="", help="Comma-separated tags")
+def schedule_add(target: str, modules: str, interval: int, output: str | None, tags: str):
+    """Register a new scheduled scan."""
+    from modules.scheduler import add_schedule
+    output_dir = output or os.getenv("OSINT_OUTPUT_DIR", "./reports")
+    module_list = [m.strip() for m in modules.split(",") if m.strip()]
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+    scan = add_schedule(target, module_list, interval_hours=interval,
+                        output_dir=output_dir, tags=tag_list)
+    console.print(f"[bold green]✔ Scheduled scan added:[/bold green] ID={scan.job_id}")
+    console.print(f"  Target   : [cyan]{target}[/cyan]")
+    console.print(f"  Modules  : {', '.join(module_list)}")
+    console.print(f"  Interval : every {interval}h")
+
+
+@cmd_schedule.command("list")
+def schedule_list():
+    """List all registered scheduled scans."""
+    from modules.scheduler import print_schedules
+    print_schedules()
+
+
+@cmd_schedule.command("remove")
+@click.argument("job_id")
+def schedule_remove(job_id: str):
+    """Remove a scheduled scan by ID."""
+    from modules.scheduler import remove_schedule
+    if remove_schedule(job_id):
+        console.print(f"[bold green]✔ Removed scheduled scan:[/bold green] {job_id}")
+    else:
+        console.print(f"[bold red]✘ No scheduled scan with ID:[/bold red] {job_id}")
+
+
+@cmd_schedule.command("run")
+@click.argument("job_id")
+def schedule_run(job_id: str):
+    """Manually trigger a scheduled scan by ID."""
+    from modules.scheduler import run_scheduled_scan
+    console.print(f"[cyan]>> Running scheduled scan: {job_id}[/cyan]")
+    try:
+        result = run_scheduled_scan(job_id)
+        status = "[yellow]⚠ Changed[/yellow]" if result.get("changed") else "[green]✓ No change[/green]"
+        console.print(f"  Status     : {status}")
+        console.print(f"  Ran at     : [dim]{result.get('run_at', '?')}[/dim]")
+        console.print(f"  Data hash  : [dim]{result.get('data_hash', '?')}[/dim]")
+        console.print(f"  Modules    : {', '.join(result.get('modules_run', []))}")
+    except Exception as e:
+        console.print(f"[bold red]✘ {e}[/bold red]")
+
+
+@cmd_schedule.command("run-due")
+def schedule_run_due():
+    """Run all scheduled scans that are due now."""
+    from modules.scheduler import run_all_due
+    console.print("[cyan]>> Running all due scheduled scans...[/cyan]")
+    results = run_all_due()
+    if not results:
+        console.print("[dim]No scans were due.[/dim]")
+        return
+    for r in results:
+        if "error" in r:
+            console.print(f"  [red]✘ {r['job_id']}: {r['error']}[/red]")
+        else:
+            changed = "[yellow]changed[/yellow]" if r.get("changed") else "[green]no change[/green]"
+            console.print(f"  [cyan]{r.get('target', '?')}[/cyan]: {changed}")
+
+
+# ── Phase 3: Cache Management ─────────────────────────────────────────────────
+
+@cli.group("cache")
+def cmd_cache():
+    """Manage the API response cache."""
+
+
+@cmd_cache.command("stats")
+def cache_stats():
+    """Show cache statistics."""
+    from modules.cache import get_cache
+    stats = get_cache().stats()
+    console.print("\n[bold cyan]>> Cache Statistics[/bold cyan]")
+    console.print(f"  Total entries  : [cyan]{stats.get('total_entries', 0)}[/cyan]")
+    console.print(f"  Active entries : [cyan]{stats.get('active_entries', 0)}[/cyan]")
+    console.print(f"  Expired        : [dim]{stats.get('expired_entries', 0)}[/dim]")
+    console.print(f"  Total hits     : [cyan]{stats.get('total_hits', 0)}[/cyan]")
+    by_module = stats.get("by_module", {})
+    if by_module:
+        console.print("  By module:")
+        for mod, count in sorted(by_module.items(), key=lambda x: x[1], reverse=True):
+            console.print(f"    [dim]{mod}[/dim]: {count}")
+    console.print(f"  DB path        : [dim]{stats.get('db_path', '?')}[/dim]")
+
+
+@cmd_cache.command("clear")
+@click.option("--module", default="", help="Clear only entries for this module")
+@click.option("--confirm", is_flag=True, help="Skip confirmation prompt")
+def cache_clear(module: str, confirm: bool):
+    """Clear cached API responses."""
+    from modules.cache import get_cache
+    if not confirm:
+        target = f"module '{module}'" if module else "ALL modules"
+        if not Confirm.ask(f"Clear cache for {target}?"):
+            return
+    deleted = get_cache().clear(module=module)
+    console.print(f"[bold green]✔ Cleared {deleted} cache entries.[/bold green]")
+
+
+@cmd_cache.command("cleanup")
+def cache_cleanup():
+    """Remove expired cache entries."""
+    from modules.cache import get_cache
+    deleted = get_cache().cleanup_expired()
+    console.print(f"[bold green]✔ Removed {deleted} expired entries.[/bold green]")
+
+
+# ── Pipeline ──────────────────────────────────────────────────────────────────
+
+@cli.command("pipeline")
+@click.argument("target")
+@click.option("--preset", default="auto",
+              type=click.Choice(["auto", "domain", "email", "username", "ip", "quick", "full"]),
+              help="Module preset to run")
+@click.option("--output-format", "out_fmt",
+              type=click.Choice(["table", "json"]), default="table")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."),
+              help="Output directory")
+def cmd_pipeline(target, preset, out_fmt, report, output):
+    """Run an automated pipeline scan with module auto-selection."""
+    from modules.pipeline import run_pipeline
+    console.print(f"\n[bold cyan]>> Pipeline scan: [white]{target}[/white] (preset=[yellow]{preset}[/yellow])[/bold cyan]")
+    result = run_pipeline(target, preset=preset)
+    if out_fmt == "json":
+        import json
+        console.print_json(json.dumps(result, default=str))
+    else:
+        for mod, data in result.get("results", {}).items():
+            if isinstance(data, dict) and "error" in data:
+                console.print(f"  [red]✘ {mod}[/red]: {data['error']}")
+            else:
+                count = len(data) if isinstance(data, dict) else "?"
+                console.print(f"  [green]✔ {mod}[/green]: {count} fields")
+    if report:
+        from modules.report import save_report
+        paths = save_report(target, result.get("results", {}), output)
+        for fmt, path in paths.items():
+            console.print(f"[dim]  Report ({fmt}): {path}[/dim]")
+
+
+# ── Dark Web Monitor ─────────────────────────────────────────────────────────
+
+@cli.command("darkweb")
+@click.argument("target")
+@click.option("--leak-key", envvar="LEAKCHECK_API_KEY", default="",
+              help="LeakCheck.io API key (env: LEAKCHECK_API_KEY)")
+@click.option("--tor-proxy", envvar="TOR_PROXY", default="",
+              help="Tor SOCKS5 proxy URL (env: TOR_PROXY), e.g. socks5h://127.0.0.1:9050")
+@click.option("--output-format", "out_fmt",
+              type=click.Choice(["table", "json"]), default="table")
+def cmd_darkweb(target, leak_key, tor_proxy, out_fmt):
+    """Check target against Pastebin, leak databases, and dark web."""
+    from modules.darkweb_monitor import darkweb_monitor, print_darkweb_results
+    console.print(f"\n[bold cyan]>> Dark Web Monitor: [white]{target}[/white][/bold cyan]")
+    result = darkweb_monitor(target, leak_key=leak_key, tor_proxy=tor_proxy)
+    if out_fmt == "json":
+        import json
+        console.print_json(json.dumps(result, default=str))
+    else:
+        print_darkweb_results(result)
+
+
+# ── Export ────────────────────────────────────────────────────────────────────
+
+@cli.group("export")
+def cmd_export():
+    """Export scan results to various threat intelligence formats."""
+
+
+@cmd_export.command("stix")
+@click.argument("target")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."),
+              help="Output directory")
+def export_stix(target, output):
+    """Export most recent scan data for TARGET as STIX 2.1 + MISP."""
+    from modules.export_stix import save_stix, print_export_summary
+    try:
+        from modules.db import get_db
+        db = get_db()
+        records = db.search(query=target, limit=1)
+        if not records:
+            console.print(f"[red]No scan data found for {target}. Run a scan first.[/red]")
+            return
+        scan_data = db.get_scan(records[0]["id"])
+        data = scan_data.get("data", {}) if scan_data else {}
+    except Exception as exc:
+        console.print(f"[yellow]Warning: DB lookup failed ({exc}), exporting empty data[/yellow]")
+        data = {}
+    paths = save_stix(target, data, output)
+    print_export_summary(paths)
+
+
+# ── Dorks Execute ─────────────────────────────────────────────────────────────
+
+@cli.group("dorks")
+def cmd_dorks():
+    """Google/DuckDuckGo dorking tools."""
+
+
+@cmd_dorks.command("run")
+@click.argument("target")
+@click.option("--type", "dork_type", default="domain",
+              type=click.Choice(["domain", "person", "email", "username"]),
+              help="Dork category to use")
+@click.option("--engine", default="ddg",
+              type=click.Choice(["ddg", "serpapi"]),
+              help="Search engine backend")
+@click.option("--max-dorks", default=5, show_default=True,
+              help="Maximum number of dork queries to execute")
+@click.option("--serpapi-key", envvar="SERPAPI_KEY", default="",
+              help="SerpAPI key (env: SERPAPI_KEY)")
+def dorks_run(target, dork_type, engine, max_dorks, serpapi_key):
+    """Execute live dork queries against DuckDuckGo or SerpAPI."""
+    from modules.google_dorks import execute_dorks_ddg, execute_dorks_serpapi, print_dork_results
+    console.print(f"\n[bold cyan]>> Dorking: [white]{target}[/white] via [yellow]{engine}[/yellow][/bold cyan]")
+    if engine == "ddg":
+        results = execute_dorks_ddg(target, dork_type=dork_type, max_dorks=max_dorks)
+    else:
+        results = execute_dorks_serpapi(target, dork_type=dork_type, max_dorks=max_dorks,
+                                        api_key=serpapi_key)
+    print_dork_results(results)
+
+
 if __name__ == "__main__":
     cli()

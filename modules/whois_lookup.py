@@ -344,11 +344,10 @@ def print_whois(data: dict):
     table.add_column("Value", style="white")
 
     w = data.get("whois", {})
-    for field, value in w.items():
-        if value and value not in ("None", "[]", "{}"):
-            if isinstance(value, list):
-                value = ", ".join(str(v) for v in value[:5])
-            table.add_row(field.replace("_", " ").title(), str(value))
+    for field, raw_value in w.items():
+        if raw_value and raw_value not in ("None", "[]", "{}"):
+            display_value = ", ".join(str(v) for v in raw_value[:5]) if isinstance(raw_value, list) else raw_value
+            table.add_row(field.replace("_", " ").title(), str(display_value))
 
     console.print(table)
 
@@ -407,8 +406,8 @@ def subdomain_enum(domain: str) -> dict:
         if resp.status_code == 200:
             for entry in resp.json():
                 name = entry.get("name_value", "")
-                for n in name.splitlines():
-                    n = n.strip().lstrip("*.")
+                for raw_n in name.splitlines():
+                    n = raw_n.strip().lstrip("*.")
                     if n.endswith(f".{domain}") or n == domain:
                         sub = n.replace(f".{domain}", "").strip()
                         if sub and "." not in sub:  # only direct subdomains
@@ -555,8 +554,8 @@ def check_email_security(domain: str) -> dict:
                 result["dmarc"]["record"] = rdata
 
                 # Policy extraction
-                for part in rdata.split(";"):
-                    part = part.strip()
+                for raw_part in rdata.split(";"):
+                    part = raw_part.strip()
                     if part.startswith("p="):
                         p = part[2:].strip()
                         if p == "reject":
@@ -857,8 +856,8 @@ def run_subfinder(domain: str, timeout: int = 60) -> dict:
             capture_output=True, text=True, timeout=timeout,
         )
         subdomains = []
-        for line in proc.stdout.splitlines():
-            line = line.strip()
+        for raw_line in proc.stdout.splitlines():
+            line = raw_line.strip()
             if line:
                 try:
                     obj = _json.loads(line)
