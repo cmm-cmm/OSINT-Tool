@@ -1364,5 +1364,122 @@ def cache_cleanup():
     console.print(f"[bold green]✔ Removed {deleted} expired entries.[/bold green]")
 
 
+# ── Pipeline ──────────────────────────────────────────────────────────────────
+
+@cli.command("pipeline")
+@click.argument("target")
+@click.option("--preset", default="auto",
+              type=click.Choice(["auto", "domain", "email", "username", "ip", "quick", "full"]),
+              help="Module preset to run")
+@click.option("--output-format", "out_fmt",
+              type=click.Choice(["table", "json"]), default="table")
+@click.option("--report", is_flag=True, help="Save HTML+JSON report")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."),
+              help="Output directory")
+def cmd_pipeline(target, preset, out_fmt, report, output):
+    """Run an automated pipeline scan with module auto-selection."""
+    from modules.pipeline import run_pipeline
+    console.print(f"\n[bold cyan]>> Pipeline scan: [white]{target}[/white] (preset=[yellow]{preset}[/yellow])[/bold cyan]")
+    result = run_pipeline(target, preset=preset)
+    if out_fmt == "json":
+        import json
+        console.print_json(json.dumps(result, default=str))
+    else:
+        for mod, data in result.get("results", {}).items():
+            if isinstance(data, dict) and "error" in data:
+                console.print(f"  [red]✘ {mod}[/red]: {data['error']}")
+            else:
+                count = len(data) if isinstance(data, dict) else "?"
+                console.print(f"  [green]✔ {mod}[/green]: {count} fields")
+    if report:
+        from modules.report import save_report
+        paths = save_report(target, result.get("results", {}), output)
+        for fmt, path in paths.items():
+            console.print(f"[dim]  Report ({fmt}): {path}[/dim]")
+
+
+# ── Dark Web Monitor ─────────────────────────────────────────────────────────
+
+@cli.command("darkweb")
+@click.argument("target")
+@click.option("--leak-key", envvar="LEAKCHECK_API_KEY", default="",
+              help="LeakCheck.io API key (env: LEAKCHECK_API_KEY)")
+@click.option("--tor-proxy", envvar="TOR_PROXY", default="",
+              help="Tor SOCKS5 proxy URL (env: TOR_PROXY), e.g. socks5h://127.0.0.1:9050")
+@click.option("--output-format", "out_fmt",
+              type=click.Choice(["table", "json"]), default="table")
+def cmd_darkweb(target, leak_key, tor_proxy, out_fmt):
+    """Check target against Pastebin, leak databases, and dark web."""
+    from modules.darkweb_monitor import darkweb_monitor, print_darkweb_results
+    console.print(f"\n[bold cyan]>> Dark Web Monitor: [white]{target}[/white][/bold cyan]")
+    result = darkweb_monitor(target, leak_key=leak_key, tor_proxy=tor_proxy)
+    if out_fmt == "json":
+        import json
+        console.print_json(json.dumps(result, default=str))
+    else:
+        print_darkweb_results(result)
+
+
+# ── Export ────────────────────────────────────────────────────────────────────
+
+@cli.group("export")
+def cmd_export():
+    """Export scan results to various threat intelligence formats."""
+
+
+@cmd_export.command("stix")
+@click.argument("target")
+@click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."),
+              help="Output directory")
+def export_stix(target, output):
+    """Export most recent scan data for TARGET as STIX 2.1 + MISP."""
+    from modules.export_stix import save_stix, print_export_summary
+    try:
+        from modules.db import get_db
+        db = get_db()
+        records = db.search(query=target, limit=1)
+        if not records:
+            console.print(f"[red]No scan data found for {target}. Run a scan first.[/red]")
+            return
+        scan_data = db.get_scan(records[0]["id"])
+        data = scan_data.get("data", {}) if scan_data else {}
+    except Exception as exc:
+        console.print(f"[yellow]Warning: DB lookup failed ({exc}), exporting empty data[/yellow]")
+        data = {}
+    paths = save_stix(target, data, output)
+    print_export_summary(paths)
+
+
+# ── Dorks Execute ─────────────────────────────────────────────────────────────
+
+@cli.group("dorks")
+def cmd_dorks():
+    """Google/DuckDuckGo dorking tools."""
+
+
+@cmd_dorks.command("run")
+@click.argument("target")
+@click.option("--type", "dork_type", default="domain",
+              type=click.Choice(["domain", "person", "email", "username"]),
+              help="Dork category to use")
+@click.option("--engine", default="ddg",
+              type=click.Choice(["ddg", "serpapi"]),
+              help="Search engine backend")
+@click.option("--max-dorks", default=5, show_default=True,
+              help="Maximum number of dork queries to execute")
+@click.option("--serpapi-key", envvar="SERPAPI_KEY", default="",
+              help="SerpAPI key (env: SERPAPI_KEY)")
+def dorks_run(target, dork_type, engine, max_dorks, serpapi_key):
+    """Execute live dork queries against DuckDuckGo or SerpAPI."""
+    from modules.google_dorks import execute_dorks_ddg, execute_dorks_serpapi, print_dork_results
+    console.print(f"\n[bold cyan]>> Dorking: [white]{target}[/white] via [yellow]{engine}[/yellow][/bold cyan]")
+    if engine == "ddg":
+        results = execute_dorks_ddg(target, dork_type=dork_type, max_dorks=max_dorks)
+    else:
+        results = execute_dorks_serpapi(target, dork_type=dork_type, max_dorks=max_dorks,
+                                        api_key=serpapi_key)
+    print_dork_results(results)
+
+
 if __name__ == "__main__":
     cli()

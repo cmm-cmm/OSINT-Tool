@@ -152,3 +152,189 @@ def print_dorks(target: str, dork_type: str = "domain"):
 
     console.print(table)
     return dorks
+
+
+# ---------------------------------------------------------------------------
+# Live execution helpers
+# ---------------------------------------------------------------------------
+
+def execute_dorks_ddg(
+    target: str,
+    dork_type: str = "domain",
+    max_dorks: int = 5,
+    session=None,
+) -> list[dict]:
+    """Execute dork queries against DuckDuckGo's HTML endpoint.
+
+    Uses the DuckDuckGo HTML interface (POST to https://html.duckduckgo.com/html/)
+    and parses results with BeautifulSoup. No API key required.
+
+    Parameters
+    ----------
+    target:
+        The scan target string.
+    dork_type:
+        Key into DORK_TEMPLATES (e.g. "domain", "person").
+    max_dorks:
+        Maximum number of dork queries to execute.
+    session:
+        Optional ``requests.Session`` to reuse.  A new session is created if
+        ``None``.
+
+    Returns
+    -------
+    list[dict]
+        Each element: ``{"dork": label, "query": query_str,
+        "results": [{"title": ..., "url": ..., "snippet": ...}]}``.
+    """
+    import time
+
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        BeautifulSoup = None  # type: ignore[assignment,misc]
+
+    dorks = generate_dorks(target, dork_type)[:max_dorks]
+    output: list[dict] = []
+
+    sess = session or requests.Session()
+    sess.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        )
+    })
+
+    for dork in dorks:
+        query = dork["query"]
+        label = dork["label"]
+        results: list[dict] = []
+
+        try:
+            resp = sess.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": query},
+                timeout=15,
+            )
+            resp.raise_for_status()
+
+            if BeautifulSoup is not None:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for result in soup.select(".result"):
+                    title_el = result.select_one(".result__title")
+                    url_el = result.select_one(".result__url")
+                    snippet_el = result.select_one(".result__snippet")
+
+                    title = title_el.get_text(strip=True) if title_el else ""
+                    url = url_el.get_text(strip=True) if url_el else ""
+                    snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+
+                    if title or url:
+                        # Normalise URL — DDG sometimes returns bare hostnames
+                        if url and not url.startswith("http"):
+                            url = "https://" + url
+                        results.append({"title": title, "url": url, "snippet": snippet})
+        except Exception:
+            pass  # silently continue to next dork
+
+        output.append({"dork": label, "query": query, "results": results})
+        time.sleep(1)
+
+    return output
+
+
+def execute_dorks_serpapi(
+    target: str,
+    api_key: str,
+    dork_type: str = "domain",
+    max_dorks: int = 10,
+) -> list[dict]:
+    """Execute dork queries via SerpAPI (Google engine).
+
+    Parameters
+    ----------
+    target:
+        The scan target string.
+    api_key:
+        SerpAPI key.
+    dork_type:
+        Key into DORK_TEMPLATES.
+    max_dorks:
+        Maximum number of dork queries to execute.
+
+    Returns
+    -------
+    list[dict]
+        Same format as :func:`execute_dorks_ddg`:
+        ``{"dork": label, "query": query_str,
+        "results": [{"title": ..., "url": ..., "snippet": ...}]}``.
+    """
+    dorks = generate_dorks(target, dork_type)[:max_dorks]
+    output: list[dict] = []
+
+    for dork in dorks:
+        query = dork["query"]
+        label = dork["label"]
+        results: list[dict] = []
+
+        try:
+            resp = requests.get(
+                "https://serpapi.com/search",
+                params={
+                    "q": query,
+                    "api_key": api_key,
+                    "engine": "google",
+                    "num": 10,
+                },
+                timeout=20,
+            )
+
+            if resp.status_code in (402, 403):
+                # Quota exceeded or access denied — stop further requests
+                output.append({"dork": label, "query": query, "results": results})
+                break
+
+            resp.raise_for_status()
+            data = resp.json()
+
+            for item in data.get("organic_results", []):
+                title = item.get("title", "")
+                url = item.get("link", "")
+                snippet = item.get("snippet", "")
+                if title or url:
+                    results.append({"title": title, "url": url, "snippet": snippet})
+
+        except Exception:
+            pass  # silently continue to next dork
+
+        output.append({"dork": label, "query": query, "results": results})
+
+    return output
+
+
+def print_dork_results(results: list[dict]) -> None:
+    """Display dork execution results in a Rich table.
+
+    Parameters
+    ----------
+    results:
+        List returned by :func:`execute_dorks_ddg` or
+        :func:`execute_dorks_serpapi`.
+    """
+    console.print("\n[bold cyan]═══ DORK EXECUTION RESULTS ═══[/bold cyan]")
+
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Dork Name", style="cyan", width=22)
+    table.add_column("Query", style="white", width=40)
+    table.add_column("Results Count", style="green", width=14, justify="right")
+    table.add_column("Top Result URL", style="blue")
+
+    for item in results:
+        dork_name = item.get("dork", "")
+        query = item.get("query", "")
+        item_results = item.get("results", [])
+        count = str(len(item_results))
+        top_url = item_results[0].get("url", "") if item_results else ""
+        table.add_row(dork_name, query, count, top_url)
+
+    console.print(table)

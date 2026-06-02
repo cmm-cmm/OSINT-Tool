@@ -488,6 +488,17 @@ new Chart(document.getElementById('port-chart'), {{
         if flat:
             sections.append(_section_interactive(key.replace("_", " ").title(), _kv_table(flat)))
 
+    # Timeline section from scan history
+    try:
+        from modules.timeline import build_timeline, render_timeline_html
+        events = build_timeline(target, limit=50)
+        if events:
+            tl_divs = render_timeline_html(events)
+            tl_content = "\n".join(tl_divs) if isinstance(tl_divs, list) else str(tl_divs)
+            sections.append(_section_interactive("Scan Timeline", tl_content, "intel"))
+    except Exception:
+        pass
+
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     summary_html = _make_summary_cards(all_data)
 

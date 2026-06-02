@@ -178,6 +178,7 @@ def run_scheduled_scan(job_id: str, on_change: Callable[[str, dict, dict], None]
 
     # Change detection
     new_hash = _data_hash(all_data)
+    prev_hash = scan.last_hash or ""
     changed = scan.last_hash is not None and scan.last_hash != new_hash
     scan.last_run = datetime.datetime.utcnow().isoformat(timespec="seconds")
     scan.last_hash = new_hash
@@ -206,6 +207,13 @@ def run_scheduled_scan(job_id: str, on_change: Callable[[str, dict, dict], None]
             on_change(scan.target, {}, all_data)
         except Exception as exc:
             logger.warning("on_change callback failed: %s", exc)
+
+    if changed and scan.alert_on_change:
+        try:
+            from modules.notifier import notify_change
+            notify_change(scan.target, prev_hash, new_hash, scan.modules, all_data)
+        except Exception as exc:
+            logger.warning("notify_change failed: %s", exc)
 
     return {
         "job_id": job_id,

@@ -3,6 +3,10 @@ OSINT Tool REST API Server
 
 Exposes core OSINT modules as a RESTful HTTP API using FastAPI.
 Start with: uvicorn api.server:app --reload --port 8000
+
+Authentication: Set API_KEYS=key1,key2 in .env and pass X-API-Key header.
+               If API_KEYS is unset, the server runs without auth (dev mode).
+Rate limiting:  Set RATE_LIMIT=60 (requests per minute per key) in .env.
 """
 import ipaddress
 import os
@@ -11,6 +15,9 @@ import uuid
 import time
 import datetime
 import sys
+import collections
+import threading
+import logging
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -18,8 +25,9 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from fastapi import FastAPI, HTTPException, Query
+    from fastapi import FastAPI, HTTPException, Query, Request, Depends
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.security import APIKeyHeader
     import uvicorn
 except ImportError:
     raise ImportError(
@@ -36,10 +44,12 @@ from modules.utils import read_scan_history, append_scan_history
 from modules.report import save_report
 from modules.report_interactive import save_interactive_report
 
+logger = logging.getLogger("osint.api")
+
 app = FastAPI(
     title="OSINT Tool API",
     description="RESTful API for OSINT Tool — gather public intelligence programmatically.",
-    version="1.2.0",
+    version="1.3.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -55,8 +65,61 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_safe_cors_origins(),
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Requested-With"],
 )
+
+
+# ── API Key Authentication ────────────────────────────────────────────────────
+
+_API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+def _load_api_keys() -> set[str]:
+    """Load valid API keys from env (comma-separated). Empty = auth disabled."""
+    raw = os.getenv("API_KEYS", "").strip()
+    return {k.strip() for k in raw.split(",") if k.strip()} if raw else set()
+
+async def verify_api_key(api_key: str | None = Depends(_API_KEY_HEADER)) -> str | None:
+    """Dependency: validate API key if auth is configured."""
+    valid_keys = _load_api_keys()
+    if not valid_keys:
+        return "anonymous"
+    if not api_key or api_key not in valid_keys:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
+    return api_key
+
+
+# ── Rate Limiting ─────────────────────────────────────────────────────────────
+
+_rate_lock = threading.Lock()
+_rate_windows: dict[str, list[float]] = collections.defaultdict(list)
+_RATE_LIMIT = int(os.getenv("RATE_LIMIT", "60"))   # requests per minute per key
+_RATE_WINDOW = 60.0                                 # seconds
+
+def _check_rate_limit(key: str) -> None:
+    """Raise 429 if the key has exceeded the rate limit."""
+    if _RATE_LIMIT <= 0:
+        return
+    now = time.monotonic()
+    with _rate_lock:
+        window = _rate_windows[key]
+        cutoff = now - _RATE_WINDOW
+        while window and window[0] < cutoff:
+            window.pop(0)
+        if len(window) >= _RATE_LIMIT:
+            retry_after = int(_RATE_WINDOW - (now - window[0])) + 1
+            raise HTTPException(
+                status_code=429,
+                detail=f"Rate limit exceeded ({_RATE_LIMIT} req/min). Retry after {retry_after}s",
+                headers={"Retry-After": str(retry_after)},
+            )
+        window.append(now)
+
+
+async def _auth_and_rate(api_key: str | None = Depends(verify_api_key)) -> str:
+    """Combined dependency: auth + rate limit check."""
+    key_id = api_key or "anonymous"
+    _check_rate_limit(key_id)
+    return key_id
 
 # Input validation regexes for SSRF prevention
 _DOMAIN_RE = re.compile(
@@ -106,14 +169,17 @@ def health() -> dict:
     """Return API health status."""
     return {
         "status": "ok",
-        "version": "1.2.0",
+        "version": "1.3.0",
         "timestamp": datetime.datetime.now().isoformat(),
+        "auth_enabled": bool(_load_api_keys()),
+        "rate_limit": _RATE_LIMIT,
     }
 
 
 # ── Scan endpoints ────────────────────────────────────────────────────────────
 
-@app.post("/scan/domain", response_model=dict, tags=["Scan"])
+@app.post("/scan/domain", response_model=dict, tags=["Scan"],
+          dependencies=[Depends(_auth_and_rate)])
 async def scan_domain(target: str = Query(..., description="Domain or IP to scan"),
                       use_cache: bool = True):
     """Run domain/IP intelligence scan (WHOIS, DNS, IP geo)."""
@@ -121,7 +187,8 @@ async def scan_domain(target: str = Query(..., description="Domain or IP to scan
     return await _run_module("domain", safe_target, use_cache)  # NOSONAR
 
 
-@app.post("/scan/email", response_model=dict, tags=["Scan"])
+@app.post("/scan/email", response_model=dict, tags=["Scan"],
+          dependencies=[Depends(_auth_and_rate)])
 async def scan_email(target: str = Query(..., description="Email address to scan"),
                      use_cache: bool = True):
     """Run email OSINT (validation, breach check, SMTP verify)."""
@@ -129,7 +196,8 @@ async def scan_email(target: str = Query(..., description="Email address to scan
     return await _run_module("email", safe_target, use_cache)  # NOSONAR
 
 
-@app.post("/scan/username", response_model=dict, tags=["Scan"])
+@app.post("/scan/username", response_model=dict, tags=["Scan"],
+          dependencies=[Depends(_auth_and_rate)])
 async def scan_username(target: str = Query(..., description="Username to search"),
                         use_cache: bool = True):
     """Search username across 40+ platforms."""
@@ -137,7 +205,8 @@ async def scan_username(target: str = Query(..., description="Username to search
     return await _run_module("username", safe_target, use_cache)  # NOSONAR
 
 
-@app.post("/scan/ip", response_model=dict, tags=["Scan"])
+@app.post("/scan/ip", response_model=dict, tags=["Scan"],
+          dependencies=[Depends(_auth_and_rate)])
 async def scan_ip(target: str = Query(..., description="IP address to scan"),
                   use_cache: bool = True):
     """Run IP geolocation and intelligence scan."""
@@ -145,7 +214,8 @@ async def scan_ip(target: str = Query(..., description="IP address to scan"),
     return await _run_module("ip", safe_target, use_cache)  # NOSONAR
 
 
-@app.post("/scan/breach", response_model=dict, tags=["Scan"])
+@app.post("/scan/breach", response_model=dict, tags=["Scan"],
+          dependencies=[Depends(_auth_and_rate)])
 async def scan_breach(target: str = Query(..., description="Email or username to check"),
                       use_cache: bool = True):
     """Check for data breaches."""
@@ -153,7 +223,8 @@ async def scan_breach(target: str = Query(..., description="Email or username to
     return await _run_module("breach", safe_target, use_cache)  # NOSONAR
 
 
-@app.post("/scan", response_model=ScanResponse, tags=["Scan"])
+@app.post("/scan", response_model=ScanResponse, tags=["Scan"],
+          dependencies=[Depends(_auth_and_rate)])
 async def full_scan(request: ScanRequest):
     """
     Run multiple OSINT modules in one request.
@@ -215,6 +286,54 @@ async def full_scan(request: ScanRequest):
         results=results,
         report_paths=report_paths,
     )
+
+
+# ── Pipeline endpoint ─────────────────────────────────────────────────────────
+
+@app.post("/scan/pipeline", response_model=dict, tags=["Scan"],
+          dependencies=[Depends(_auth_and_rate)])
+async def pipeline_scan(
+    target: str = Query(..., description="Target to scan"),
+    preset: str = Query(default="auto", description="Preset: auto, domain, email, username, ip, quick, full"),
+):
+    """Run a full pipeline scan with automatic module selection based on preset."""
+    safe_target = _validate_scan_target(target, "domain")
+    try:
+        from modules.pipeline import run_pipeline
+        result = run_pipeline(safe_target, preset=preset)  # NOSONAR
+        return result
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Pipeline module not available")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ── Export endpoints ──────────────────────────────────────────────────────────
+
+@app.post("/export/stix", tags=["Export"],
+          dependencies=[Depends(_auth_and_rate)])
+async def export_stix(
+    target: str = Query(..., description="Target to export (must have been scanned)"),
+):
+    """Export scan results as STIX 2.1 + MISP format."""
+    safe_target = _validate_scan_target(target, "domain")
+    try:
+        from modules.db import get_db
+        from modules.export_stix import to_stix_bundle, to_misp_event
+        db = get_db()
+        records = db.search(query=safe_target, limit=1)
+        if not records:
+            raise HTTPException(status_code=404, detail=f"No scan data found for {safe_target}")
+        scan_data = db.get_scan(records[0]["id"])
+        data = scan_data.get("data", {}) if scan_data else {}
+        return {
+            "stix_bundle": to_stix_bundle(safe_target, data),
+            "misp_event": to_misp_event(safe_target, data),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ── Cache endpoints ───────────────────────────────────────────────────────────
