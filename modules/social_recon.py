@@ -13,7 +13,7 @@ from urllib.parse import quote
 import requests
 from rich.console import Console
 
-console = Console()
+console = Console(legacy_windows=False)
 
 FACEBOOK_GRAPH_API_VERSION = "v21.0"  # Update when Facebook retires this version
 SCRAPER3_DELAY = 0.5  # Seconds between sequential RapidAPI calls to avoid HTTP 429

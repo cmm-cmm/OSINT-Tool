@@ -24,7 +24,7 @@ from rich.table import Table
 from rich import box
 from modules.utils import make_session, RateLimiter
 
-console = Console()
+console = Console(legacy_windows=False)
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; OSINT-Tool/1.0; +Research)"}
 _session = make_session(retries=2, backoff_factor=0.3)
 _rate_limiter = RateLimiter(calls=10, period=1.0)

@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
-console = Console()
+console = Console(legacy_windows=False)
 
 PLATFORMS = {
     # International — Dev & Tech
