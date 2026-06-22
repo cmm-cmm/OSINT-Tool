@@ -580,6 +580,512 @@ def cross_platform_pivot_links(
     return links
 
 
+# ── Phone OSINT ───────────────────────────────────────────────────────────────
+
+# Maps lowercase location keywords (hashtags / bio mentions) → readable place name
+_LOCATION_KEYWORDS: dict[str, str] = {
+    # Vietnam
+    "hanoi": "Hanoi, Vietnam", "hanoicity": "Hanoi, Vietnam",
+    "hcm": "Ho Chi Minh City, Vietnam", "hcmc": "Ho Chi Minh City, Vietnam",
+    "hochiminhcity": "Ho Chi Minh City, Vietnam", "saigon": "Ho Chi Minh City, Vietnam",
+    "danang": "Da Nang, Vietnam", "hue": "Hue, Vietnam",
+    "cantho": "Can Tho, Vietnam", "haiphong": "Hai Phong, Vietnam",
+    "nhatrang": "Nha Trang, Vietnam", "dalat": "Da Lat, Vietnam",
+    "vungtau": "Vung Tau, Vietnam", "quangninh": "Quang Ninh, Vietnam",
+    "vietnam": "Vietnam", "viet": "Vietnam",
+    # Southeast Asia
+    "bangkok": "Bangkok, Thailand", "thailand": "Thailand",
+    "singapore": "Singapore", "sg": "Singapore",
+    "kualalumpur": "Kuala Lumpur, Malaysia", "malaysia": "Malaysia",
+    "jakarta": "Jakarta, Indonesia", "bali": "Bali, Indonesia",
+    "manila": "Manila, Philippines", "phnom": "Phnom Penh, Cambodia",
+    # East Asia
+    "tokyo": "Tokyo, Japan", "osaka": "Osaka, Japan", "japan": "Japan",
+    "seoul": "Seoul, South Korea", "korea": "South Korea",
+    "beijing": "Beijing, China", "shanghai": "Shanghai, China",
+    "china": "China", "taiwan": "Taiwan",
+    # Other
+    "newyork": "New York, USA", "losangeles": "Los Angeles, USA",
+    "london": "London, UK", "paris": "Paris, France",
+    "sydney": "Sydney, Australia", "dubai": "Dubai, UAE",
+}
+
+
+def analyse_phone_numbers(
+    phone_hints: list[str],
+    default_region: str = "VN",
+) -> list[dict]:
+    """
+    Validate and enrich phone number strings found in a TikTok bio.
+
+    Uses the `phonenumbers` library (already in requirements.txt) to:
+    - Validate the number format
+    - Identify country/region
+    - Look up carrier/operator name
+    - Determine number type (mobile, fixed-line, VoIP …)
+    - Infer timezone(s)
+
+    Parameters
+    ----------
+    phone_hints:
+        Raw digit strings extracted from bio (e.g. ["0901234567", "+84123456789"]).
+    default_region:
+        ISO-3166-1 alpha-2 fallback region when no country code prefix is present.
+        Defaults to "VN" (Vietnam).
+    """
+    if not phone_hints:
+        return []
+
+    try:
+        import phonenumbers
+        from phonenumbers import geocoder, carrier
+        from phonenumbers import timezone as pn_tz
+        from phonenumbers import PhoneNumberType, number_type
+    except ImportError:
+        return [{"raw": p, "valid": None, "error": "phonenumbers not installed"} for p in phone_hints]
+
+    _type_labels = {
+        PhoneNumberType.MOBILE:              "Mobile",
+        PhoneNumberType.FIXED_LINE:          "Fixed line",
+        PhoneNumberType.FIXED_LINE_OR_MOBILE:"Fixed/Mobile",
+        PhoneNumberType.TOLL_FREE:           "Toll-free",
+        PhoneNumberType.PREMIUM_RATE:        "Premium rate",
+        PhoneNumberType.VOIP:                "VoIP",
+        PhoneNumberType.UNKNOWN:             "Unknown",
+    }
+
+    results: list[dict] = []
+    for raw in phone_hints:
+        entry: dict = {"raw": raw}
+        parsed = None
+
+        # Try bare number with default region, then with explicit + prefix
+        for attempt in [raw, f"+{raw}"]:
+            try:
+                p = phonenumbers.parse(attempt, default_region)
+                if phonenumbers.is_valid_number(p):
+                    parsed = p
+                    break
+            except Exception:
+                pass
+
+        # Last resort: parse without validation
+        if parsed is None:
+            try:
+                parsed = phonenumbers.parse(raw, default_region)
+            except Exception:
+                entry.update({"valid": False, "error": "Cannot parse"})
+                results.append(entry)
+                continue
+
+        valid = phonenumbers.is_valid_number(parsed)
+        fmt_e164  = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164) if valid else None
+        fmt_intl  = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.INTERNATIONAL) if valid else None
+        region    = phonenumbers.region_code_for_number(parsed) if valid else None
+        location  = geocoder.description_for_number(parsed, "en") if valid else None
+        carrier_n = carrier.name_for_number(parsed, "en") if valid else None
+        timezones = list(pn_tz.time_zones_for_number(parsed)) if valid else []
+        ntype     = _type_labels.get(number_type(parsed), "Unknown") if valid else None
+
+        entry.update({
+            "valid":          valid,
+            "e164":           fmt_e164,
+            "international":  fmt_intl,
+            "country_code":   parsed.country_code,
+            "national_number": str(parsed.national_number),
+            "region":         region,
+            "location":       location,
+            "carrier":        carrier_n,
+            "timezones":      timezones,
+            "number_type":    ntype,
+        })
+        results.append(entry)
+
+    return results
+
+
+# ── Video Geolocation ─────────────────────────────────────────────────────────
+
+def extract_geolocation_hints(
+    videos: list[dict],
+    bio: str | None = None,
+) -> dict:
+    """
+    Infer geographic location from available video and bio signals.
+
+    Sources (in priority order):
+    1. `locationCreated` metadata from TikTok API (high confidence)
+    2. Location hashtags in video descriptions  (#hanoi, #saigon …)
+    3. Keyword mentions in video titles and bio  (medium confidence)
+
+    Returns
+    -------
+    dict with keys:
+        primary          — most likely location string (or None)
+        confidence       — "high" | "medium" | "low" | "none"
+        inferred_locations — ranked list of {location, mention_count}
+        api_locations      — list of {location, video_url, confidence}
+    """
+    location_counts: dict[str, int] = {}
+    api_locations: list[dict] = []
+
+    for v in videos:
+        # Source 1: API-provided location tag
+        loc = (v.get("location_created") or "").strip()
+        if loc:
+            api_locations.append({
+                "location":  loc,
+                "video_url": v.get("video_url", ""),
+                "confidence": "high",
+            })
+
+        # Source 2 & 3: hashtags and title text
+        for tag in v.get("hashtags", []):
+            key = tag.lower().replace(" ", "").replace("_", "")
+            if key in _LOCATION_KEYWORDS:
+                place = _LOCATION_KEYWORDS[key]
+                location_counts[place] = location_counts.get(place, 0) + 1
+
+        title_l = (v.get("title") or "").lower()
+        for kw, place in _LOCATION_KEYWORDS.items():
+            if len(kw) > 5 and kw in title_l:
+                location_counts[place] = location_counts.get(place, 0) + 1
+
+    # Bio keyword scan
+    if bio:
+        bio_l = bio.lower()
+        for kw, place in _LOCATION_KEYWORDS.items():
+            if len(kw) > 4 and kw in bio_l:
+                location_counts[place] = location_counts.get(place, 0) + 1
+
+    ranked = sorted(location_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    if api_locations:
+        confidence = "high"
+        primary = api_locations[0]["location"]
+    elif ranked:
+        confidence = "medium" if ranked[0][1] >= 2 else "low"
+        primary = ranked[0][0]
+    else:
+        confidence = "none"
+        primary = None
+
+    return {
+        "primary":             primary,
+        "confidence":          confidence,
+        "inferred_locations":  [{"location": l, "mention_count": c} for l, c in ranked],
+        "api_locations":       api_locations[:10],
+    }
+
+
+# ── HTML Report Export ────────────────────────────────────────────────────────
+
+def export_tiktok_html(data: dict, output_path: str = "") -> str:
+    """
+    Generate a standalone HTML intelligence report from tiktok_recon() output.
+
+    The report is self-contained (inline CSS, no external dependencies) and
+    can be opened offline or shared as a single file.
+
+    Parameters
+    ----------
+    data:
+        Dict returned by tiktok_recon().
+    output_path:
+        Where to write the HTML file. Defaults to
+        ``tiktok_<username>_<timestamp>.html`` in the current directory.
+
+    Returns
+    -------
+    str — the output file path.
+    """
+    import html as _html
+    from datetime import datetime
+
+    username = data.get("username", "unknown")
+    if not output_path:
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        output_path = f"tiktok_{username}_{ts}.html"
+
+    def _e(v: object) -> str:
+        return _html.escape(str(v)) if v is not None else ""
+
+    def _fmt(n: int | None) -> str:
+        return f"{n:,}" if n is not None else "—"
+
+    # ── profile stats ──────────────────────────────────────────────────────────
+    profile_rows = ""
+    for label, val in [
+        ("Username",    f"@{username}"),
+        ("Display Name", data.get("display_name")),
+        ("Status",      "Public" if data.get("is_public") else "Private" if data.get("exists") else "Not found"),
+        ("Verified",    "Yes" if data.get("is_verified") else "No"),
+        ("Region",      data.get("region")),
+        ("User ID",     data.get("user_id")),
+        ("Followers",   _fmt(data.get("follower_count"))),
+        ("Following",   _fmt(data.get("following_count"))),
+        ("Total Likes", _fmt(data.get("likes_count"))),
+        ("Videos",      _fmt(data.get("video_count"))),
+        ("Engagement %", f"{data['engagement_rate']}%" if data.get("engagement_rate") else "—"),
+        ("Private Acct", "Yes" if data.get("private_account") else "No"),
+    ]:
+        if val:
+            profile_rows += f"<tr><td class='lbl'>{_e(label)}</td><td>{_e(val)}</td></tr>\n"
+
+    # ── bio ────────────────────────────────────────────────────────────────────
+    bio_html = ""
+    bio = data.get("bio")
+    if bio:
+        bio_html = f"<div class='card'><h3>Bio</h3><p class='bio-text'>{_e(bio)}</p>"
+        bi = data.get("bio_intel", {})
+        if bi.get("urls"):
+            links = " ".join(f"<a href='{_e(u)}' target='_blank'>{_e(u[:60])}</a>" for u in bi["urls"][:4])
+            bio_html += f"<p><strong>Links:</strong> {links}</p>"
+        if bi.get("emails"):
+            bio_html += f"<p><strong>Emails:</strong> {_e(', '.join(bi['emails']))}</p>"
+        if bi.get("cross_platform"):
+            bio_html += f"<p><strong>Cross-platform refs:</strong> {_e(', '.join(bi['cross_platform'][:6]))}</p>"
+        if bi.get("phone_hints"):
+            bio_html += f"<p><strong>Phone hints:</strong> {_e(', '.join(bi['phone_hints']))}</p>"
+        bio_html += "</div>"
+
+    # ── phone OSINT ───────────────────────────────────────────────────────────
+    phone_html = ""
+    for ph in data.get("phone_osint", []):
+        color = "valid" if ph.get("valid") else "invalid"
+        phone_html += f"""
+        <tr>
+          <td>{_e(ph['raw'])}</td>
+          <td class='{color}'>{_e(ph.get('e164') or ('Invalid' if not ph.get('valid') else ''))}</td>
+          <td>{_e(ph.get('number_type', ''))}</td>
+          <td>{_e(ph.get('location', ''))}</td>
+          <td>{_e(ph.get('carrier', ''))}</td>
+          <td>{_e(', '.join(ph.get('timezones', [])))}</td>
+        </tr>"""
+    phone_section = ""
+    if phone_html:
+        phone_section = f"""
+        <div class='card'>
+          <h3>Phone OSINT</h3>
+          <table><thead><tr>
+            <th>Raw</th><th>E.164</th><th>Type</th><th>Location</th><th>Carrier</th><th>Timezone</th>
+          </tr></thead><tbody>{phone_html}</tbody></table>
+        </div>"""
+
+    # ── geolocation ───────────────────────────────────────────────────────────
+    geo = data.get("geolocation_hints", {})
+    geo_html = ""
+    if geo.get("primary"):
+        conf_badge = f"<span class='badge {geo['confidence']}'>{_e(geo['confidence'])}</span>"
+        geo_html = f"<div class='card'><h3>Geolocation Hints {conf_badge}</h3>"
+        geo_html += f"<p><strong>Primary location:</strong> {_e(geo['primary'])}</p>"
+        if geo.get("inferred_locations"):
+            geo_html += "<ul>"
+            for loc in geo["inferred_locations"]:
+                geo_html += f"<li>{_e(loc['location'])} — {loc['mention_count']} mention(s)</li>"
+            geo_html += "</ul>"
+        if geo.get("api_locations"):
+            geo_html += "<p><strong>Tagged in videos:</strong></p><ul>"
+            for al in geo["api_locations"][:5]:
+                url = al.get("video_url", "")
+                link = f"<a href='{_e(url)}' target='_blank'>{_e(url[:60])}</a>" if url else ""
+                geo_html += f"<li>{_e(al['location'])} {link}</li>"
+            geo_html += "</ul>"
+        geo_html += "</div>"
+
+    # ── video analysis ────────────────────────────────────────────────────────
+    va = data.get("video_analysis", {})
+    va_html = ""
+    if va:
+        va_html = "<div class='card'><h3>Video Analysis</h3><table>"
+        for label, key in [
+            ("Avg Plays/Video", "avg_play_count"), ("Avg Likes/Video", "avg_like_count"),
+            ("Peak Play Count", "max_play_count"), ("Posts/Week", "posts_per_week"),
+        ]:
+            if va.get(key):
+                va_html += f"<tr><td class='lbl'>{label}</td><td>{_fmt(va[key]) if isinstance(va[key], int) else _e(va[key])}</td></tr>"
+        va_html += "</table>"
+        if va.get("top_hashtags"):
+            tags = " ".join(f"<span class='tag'>#{_e(t['tag'])} ({t['count']})</span>" for t in va["top_hashtags"][:10])
+            va_html += f"<p><strong>Top hashtags:</strong> {tags}</p>"
+        va_html += "</div>"
+
+    # ── recent videos ─────────────────────────────────────────────────────────
+    videos_rows = ""
+    for v in data.get("recent_videos", [])[:10]:
+        url = v.get("video_url", "")
+        title = (_e(v.get("title") or ""))[:80]
+        loc = f"📍 {_e(v['location_created'])}" if v.get("location_created") else ""
+        link = f"<a href='{_e(url)}' target='_blank'>{title}</a>" if url else title
+        videos_rows += f"""<tr>
+          <td>{link} {loc}</td>
+          <td>{_fmt(v.get('play_count'))}</td>
+          <td>{_fmt(v.get('like_count'))}</td>
+          <td>{_fmt(v.get('comment_count'))}</td>
+        </tr>"""
+    videos_section = ""
+    if videos_rows:
+        videos_section = f"""
+        <div class='card'>
+          <h3>Recent Videos</h3>
+          <table><thead><tr><th>Title</th><th>Plays</th><th>Likes</th><th>Comments</th></tr></thead>
+          <tbody>{videos_rows}</tbody></table>
+        </div>"""
+
+    # ── web archive ───────────────────────────────────────────────────────────
+    wa = data.get("web_archive", {})
+    wa_html = ""
+    if wa.get("available"):
+        wa_html = f"""
+        <div class='card'>
+          <h3>Web Archive</h3>
+          <p>Found <strong>{wa['snapshots']}</strong> snapshot(s) —
+             earliest: {_e(wa.get('earliest', '?'))}, latest: {_e(wa.get('latest', '?'))}</p>
+          <p><a href='{_e(wa.get("archive_search",""))}' target='_blank'>Browse all snapshots</a></p>"""
+        if wa.get("recent"):
+            wa_html += "<ul>"
+            for s in wa["recent"][:5]:
+                wa_html += f"<li><a href='{_e(s['wayback_url'])}' target='_blank'>{_e(s['date'])}</a></li>"
+            wa_html += "</ul>"
+        wa_html += "</div>"
+
+    # ── security notes ────────────────────────────────────────────────────────
+    notes = data.get("security_notes", [])
+    notes_html = ""
+    if notes:
+        items = "".join(f"<li>{_e(n)}</li>" for n in notes)
+        notes_html = f"<div class='card warn'><h3>Security Observations</h3><ul>{items}</ul></div>"
+
+    # ── pivot links ───────────────────────────────────────────────────────────
+    pl = data.get("pivot_links", {})
+    pl_html = ""
+    if pl:
+        pl_html = "<div class='card'><h3>Cross-Platform Pivot Links</h3>"
+        for cat, items in pl.items():
+            label = cat.replace("_", " ").title()
+            pl_html += f"<h4>{_e(label)}</h4><ul>"
+            for item in (items if isinstance(items, list) else []):
+                tool = _e(item.get("tool") or item.get("email", ""))
+                url  = item.get("url") or item.get("hibp") or ""
+                note = f" — {_e(item['note'])}" if item.get("note") else ""
+                pl_html += f"<li><a href='{_e(url)}' target='_blank'>{tool}</a>{note}</li>"
+            pl_html += "</ul>"
+        pl_html += "</div>"
+
+    # ── dorks ─────────────────────────────────────────────────────────────────
+    dorks = data.get("dorks", [])
+    dorks_html = ""
+    if dorks:
+        rows = "".join(
+            f"<tr><td>{_e(d['label'])}</td>"
+            f"<td><a href='{_e(d['url'])}' target='_blank'>{_e(d['query'][:80])}</a></td></tr>"
+            for d in dorks
+        )
+        dorks_html = f"<div class='card'><h3>Investigation Dorks</h3><table><tbody>{rows}</tbody></table></div>"
+
+    # ── assemble ──────────────────────────────────────────────────────────────
+    avatar = data.get("profile_pic", "")
+    avatar_tag = f"<img src='{_e(avatar)}' class='avatar' alt='avatar'>" if avatar else ""
+    generated = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    sources = _e(", ".join(data.get("data_sources", ["none"])))
+
+    html_doc = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TikTok OSINT — @{_e(username)}</title>
+<style>
+  *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: #0d0d0d; color: #e0e0e0;
+          line-height: 1.6; padding: 20px; }}
+  h1 {{ color: #fe2c55; font-size: 1.8rem; }}
+  h2 {{ color: #69c9d0; font-size: 1.2rem; margin-bottom: 4px; }}
+  h3 {{ color: #69c9d0; font-size: 1rem; margin-bottom: 10px; border-bottom: 1px solid #333;
+        padding-bottom: 4px; }}
+  h4 {{ color: #aaa; font-size: 0.9rem; margin: 8px 0 4px; }}
+  a {{ color: #69c9d0; text-decoration: none; }}
+  a:hover {{ text-decoration: underline; }}
+  .header {{ display: flex; align-items: center; gap: 20px; margin-bottom: 24px;
+             background: #1a1a1a; padding: 20px; border-radius: 12px;
+             border-left: 4px solid #fe2c55; }}
+  .avatar {{ width: 80px; height: 80px; border-radius: 50%; object-fit: cover;
+             border: 3px solid #fe2c55; }}
+  .username {{ font-size: 1.4rem; font-weight: bold; color: #fff; }}
+  .status-public  {{ color: #4caf50; }}
+  .status-private {{ color: #ff9800; }}
+  .status-not-found {{ color: #f44336; }}
+  .card {{ background: #1a1a1a; border-radius: 10px; padding: 16px;
+           margin-bottom: 16px; border: 1px solid #2a2a2a; }}
+  .card.warn {{ border-left: 4px solid #ff9800; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; }}
+  th {{ background: #252525; color: #aaa; text-align: left; padding: 6px 10px;
+        font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }}
+  td {{ padding: 6px 10px; border-bottom: 1px solid #252525; }}
+  td.lbl {{ color: #aaa; width: 160px; white-space: nowrap; }}
+  ul {{ padding-left: 20px; }}
+  li {{ margin-bottom: 4px; font-size: 0.9rem; }}
+  .tag {{ background: #252560; color: #69c9d0; padding: 2px 8px;
+          border-radius: 12px; font-size: 0.8rem; display: inline-block;
+          margin: 2px; }}
+  .badge {{ padding: 2px 8px; border-radius: 8px; font-size: 0.75rem; font-weight: bold; }}
+  .badge.high   {{ background:#1b5e20; color:#a5d6a7; }}
+  .badge.medium {{ background:#e65100; color:#ffe0b2; }}
+  .badge.low    {{ background:#4a148c; color:#e1bee7; }}
+  .bio-text {{ font-style: italic; color: #ccc; margin-bottom: 10px; }}
+  .valid   {{ color: #4caf50; }}
+  .invalid {{ color: #f44336; }}
+  .footer  {{ color: #555; font-size: 0.75rem; margin-top: 24px; text-align: center; }}
+  .grid2   {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
+  @media (max-width: 700px) {{ .grid2 {{ grid-template-columns: 1fr; }} }}
+</style>
+</head>
+<body>
+<div class="header">
+  {avatar_tag}
+  <div>
+    <div class="username">@{_e(username)}</div>
+    <div><em>{_e(data.get('display_name') or '')}</em></div>
+    <div class="{'status-public' if data.get('is_public') else 'status-private' if data.get('exists') else 'status-not-found'}">
+      {'✓ Public' if data.get('is_public') else '⚠ Private' if data.get('exists') else '✗ Not Found'}
+      {'  ✓ Verified' if data.get('is_verified') else ''}
+    </div>
+    <div style="font-size:0.8rem;color:#555;margin-top:4px">
+      Sources: {sources} &nbsp;|&nbsp; Generated: {generated}
+    </div>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Profile</h3>
+    <table><tbody>{profile_rows}</tbody></table>
+  </div>
+  {geo_html if geo_html else '<div></div>'}
+</div>
+
+{bio_html}
+{phone_section}
+{va_html}
+{videos_section}
+{wa_html}
+{notes_html}
+{pl_html}
+{dorks_html}
+
+<div class="footer">
+  TikTok OSINT Report — generated {generated} — for authorised research only
+</div>
+</body>
+</html>"""
+
+    with open(output_path, "w", encoding="utf-8") as fh:
+        fh.write(html_doc)
+
+    logger.info("HTML report written to %s", output_path)
+    return output_path
+
+
 # ── Private: video list ───────────────────────────────────────────────────────
 
 def _fetch_recent_videos(sec_uid: str, count: int = 12, api_key: str = "") -> list[dict]:
@@ -651,16 +1157,25 @@ def _parse_video_item(item: dict) -> dict:
         item.get("shareUrl")
         or (f"https://www.tiktok.com/video/{aweme_id}" if aweme_id else "")
     )
+    # Location metadata — available when creator tags a location
+    poi = item.get("poi") or {}
+    location_created = (
+        item.get("locationCreated")
+        or poi.get("name")
+        or poi.get("address")
+        or ""
+    )
     return {
-        "title": desc[:120],
-        "play_count": stats.get("playCount", 0),
-        "like_count": stats.get("diggCount", 0),
-        "comment_count": stats.get("commentCount", 0),
-        "share_count": stats.get("shareCount", 0),
-        "create_time": create_ts,
-        "hashtags": hashtags,
-        "video_url": video_url,
-        "duration_sec": video.get("duration", 0),
+        "title":            desc[:120],
+        "play_count":       stats.get("playCount", 0),
+        "like_count":       stats.get("diggCount", 0),
+        "comment_count":    stats.get("commentCount", 0),
+        "share_count":      stats.get("shareCount", 0),
+        "create_time":      create_ts,
+        "hashtags":         hashtags,
+        "video_url":        video_url,
+        "duration_sec":     video.get("duration", 0),
+        "location_created": location_created,
     }
 
 
@@ -887,6 +1402,8 @@ def tiktok_recon(
     web_archive: bool = True,
     reverse_image: bool = True,
     pivot_links: bool = True,
+    phone_osint: bool = True,
+    geo_hints: bool = True,
 ) -> dict:
     """
     Gather comprehensive OSINT from a public TikTok profile.
@@ -909,6 +1426,10 @@ def tiktok_recon(
         Generate reverse-image-search links for the profile picture.
     pivot_links:
         Generate cross-platform OSINT pivot links (Holehe, Maigret, HIBP).
+    phone_osint:
+        Validate & enrich phone numbers found in bio (carrier, region, timezone).
+    geo_hints:
+        Extract geolocation hints from video metadata, hashtags, and bio text.
 
     Returns
     -------
@@ -918,6 +1439,7 @@ def tiktok_recon(
         private_account, region, user_id, sec_uid,
         follower_count, following_count, likes_count, video_count, friend_count,
         engagement_rate, recent_videos, video_analysis,
+        phone_osint, geolocation_hints,
         web_archive, reverse_image_links, pivot_links,
         data_sources, security_notes, dorks
     """
@@ -950,12 +1472,14 @@ def tiktok_recon(
         "engagement_rate":    None,
         "recent_videos":      [],
         "video_analysis":     {},
-        "web_archive":        {},
+        "phone_osint":         [],
+        "geolocation_hints":   {},
+        "web_archive":         {},
         "reverse_image_links": [],
-        "pivot_links":        {},
-        "data_sources":       [],
-        "security_notes":     [],
-        "dorks":              [],
+        "pivot_links":         {},
+        "data_sources":        [],
+        "security_notes":      [],
+        "dorks":               [],
     }
 
     # ── 1. RapidAPI sources ───────────────────────────────────────────────────
@@ -1035,17 +1559,30 @@ def tiktok_recon(
     # ── 9. Investigation dorks ────────────────────────────────────────────────
     result["dorks"] = _build_dorks(username, result.get("display_name"))
 
-    # ── 10. Web Archive (Internet Archive CDX) ────────────────────────────────
+    # ── 10. Phone OSINT ───────────────────────────────────────────────────────
+    if phone_osint:
+        hints = (result.get("bio_intel") or {}).get("phone_hints", [])
+        if hints:
+            result["phone_osint"] = analyse_phone_numbers(hints)
+
+    # ── 11. Geolocation hints ─────────────────────────────────────────────────
+    if geo_hints:
+        result["geolocation_hints"] = extract_geolocation_hints(
+            result.get("recent_videos", []),
+            result.get("bio"),
+        )
+
+    # ── 12. Web Archive (Internet Archive CDX) ────────────────────────────────
     if web_archive:
         result["web_archive"] = check_web_archive(username)
 
-    # ── 11. Reverse image search links ────────────────────────────────────────
+    # ── 13. Reverse image search links ────────────────────────────────────────
     if reverse_image:
         result["reverse_image_links"] = reverse_image_search_links(
             result.get("profile_pic"), username
         )
 
-    # ── 12. Cross-platform pivot links ────────────────────────────────────────
+    # ── 14. Cross-platform pivot links ────────────────────────────────────────
     if pivot_links:
         bio_emails = (result.get("bio_intel") or {}).get("emails", [])
         result["pivot_links"] = cross_platform_pivot_links(
@@ -1139,6 +1676,35 @@ def print_tiktok_results(data: dict) -> None:
     if bio_intel.get("cross_platform"):
         console.print(f"  [bold]Cross-platform refs:[/bold] {', '.join(bio_intel['cross_platform'][:6])}")
 
+    # Phone OSINT
+    phone_data = data.get("phone_osint", [])
+    if phone_data:
+        console.print("\n  [bold cyan]Phone OSINT[/bold cyan]")
+        for ph in phone_data:
+            if ph.get("valid"):
+                console.print(
+                    f"    [green]✓[/green] {ph['raw']} → [bold]{ph.get('e164', '')}[/bold]"
+                    f"  {ph.get('number_type', '')}  |  {ph.get('location', '')}  |  {ph.get('carrier', '')}"
+                )
+                if ph.get("timezones"):
+                    console.print(f"       Timezone(s): {', '.join(ph['timezones'])}")
+            else:
+                console.print(f"    [red]✗[/red] {ph['raw']} — {ph.get('error', 'invalid')}")
+
+    # Geolocation hints
+    geo = data.get("geolocation_hints", {})
+    if geo.get("primary"):
+        conf_color = {"high": "green", "medium": "yellow", "low": "red"}.get(geo.get("confidence", "low"), "dim")
+        console.print(f"\n  [bold cyan]Geolocation Hints[/bold cyan]  [[{conf_color}]{geo.get('confidence', '')}[/{conf_color}]]")
+        console.print(f"    Primary location: [bold]{geo['primary']}[/bold]")
+        if geo.get("api_locations"):
+            console.print("    API-tagged locations:")
+            for al in geo["api_locations"][:3]:
+                console.print(f"      [green]📍[/green] {al['location']}")
+        if geo.get("inferred_locations"):
+            locs = "  ".join(f"{l['location']} ({l['mention_count']})" for l in geo["inferred_locations"][:4])
+            console.print(f"    Inferred from content: {locs}")
+
     # Video analysis
     va = data.get("video_analysis", {})
     if va:
@@ -1163,7 +1729,8 @@ def print_tiktok_results(data: dict) -> None:
             title = (v.get("title") or "")[:60]
             plays = f"{v['play_count']:,}" if v.get("play_count") else "?"
             likes = f"{v['like_count']:,}" if v.get("like_count") else "?"
-            console.print(f"    [{i}] {title} | 👁 {plays}  ❤ {likes}")
+            loc   = f"  [dim]📍 {v['location_created']}[/dim]" if v.get("location_created") else ""
+            console.print(f"    [{i}] {title} | 👁 {plays}  ❤ {likes}{loc}")
 
     # Security notes
     notes = data.get("security_notes", [])

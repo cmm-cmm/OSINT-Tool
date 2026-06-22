@@ -309,3 +309,252 @@ class TestTikTokReconIntegration:
     def test_username_stripped_of_at_sign(self):
         result = self._run_recon(username="@someuser")
         assert result["username"] == "someuser"
+
+    def test_result_has_phone_osint_key(self):
+        result = self._run_recon()
+        assert "phone_osint" in result
+
+    def test_result_has_geolocation_hints_key(self):
+        result = self._run_recon()
+        assert "geolocation_hints" in result
+
+    def test_phone_osint_skipped_when_disabled(self):
+        from modules.social.tiktok import tiktok_recon
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.text = ""
+        with patch("requests.get", return_value=mock_resp), \
+             patch("modules.social.tiktok.analyse_phone_numbers") as mock_fn, \
+             patch("requests.Session") as mock_session:
+            sess_inst = MagicMock()
+            sess_inst.get.return_value = mock_resp
+            mock_session.return_value = sess_inst
+            tiktok_recon("testuser", phone_osint=False)
+        mock_fn.assert_not_called()
+
+    def test_geo_hints_skipped_when_disabled(self):
+        from modules.social.tiktok import tiktok_recon
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.text = ""
+        with patch("requests.get", return_value=mock_resp), \
+             patch("modules.social.tiktok.extract_geolocation_hints") as mock_fn, \
+             patch("requests.Session") as mock_session:
+            sess_inst = MagicMock()
+            sess_inst.get.return_value = mock_resp
+            mock_session.return_value = sess_inst
+            tiktok_recon("testuser", geo_hints=False)
+        mock_fn.assert_not_called()
+
+
+# ── analyse_phone_numbers ─────────────────────────────────────────────────────
+
+class TestAnalysePhoneNumbers:
+    def _fn(self):
+        from modules.social.tiktok import analyse_phone_numbers
+        return analyse_phone_numbers
+
+    def test_returns_empty_list_for_empty_input(self):
+        fn = self._fn()
+        assert fn([]) == []
+
+    def test_validates_vn_mobile_number(self):
+        fn = self._fn()
+        result = fn(["0901234567"], default_region="VN")
+        assert len(result) == 1
+        ph = result[0]
+        assert ph["valid"] is True
+        assert ph["e164"].startswith("+84")
+        assert ph["region"] == "VN"
+
+    def test_validates_international_format(self):
+        fn = self._fn()
+        result = fn(["+84901234567"])
+        ph = result[0]
+        assert ph["valid"] is True
+        assert "Vietnam" in (ph.get("location") or "")
+
+    def test_invalid_number_marked_as_invalid(self):
+        fn = self._fn()
+        result = fn(["123"])
+        ph = result[0]
+        assert ph["valid"] is False
+
+    def test_returns_number_type(self):
+        fn = self._fn()
+        result = fn(["0901234567"], default_region="VN")
+        if result[0].get("valid"):
+            assert result[0].get("number_type") is not None
+
+    def test_multiple_numbers_processed(self):
+        fn = self._fn()
+        result = fn(["0901234567", "0281234567"], default_region="VN")
+        assert len(result) == 2
+
+    def test_timezones_included_for_valid_number(self):
+        fn = self._fn()
+        result = fn(["0901234567"], default_region="VN")
+        if result[0].get("valid"):
+            assert isinstance(result[0].get("timezones"), list)
+
+
+# ── extract_geolocation_hints ─────────────────────────────────────────────────
+
+class TestExtractGeolocationHints:
+    def _fn(self):
+        from modules.social.tiktok import extract_geolocation_hints
+        return extract_geolocation_hints
+
+    def test_returns_none_primary_when_no_data(self):
+        fn = self._fn()
+        result = fn([])
+        assert result["primary"] is None
+        assert result["confidence"] == "none"
+
+    def test_detects_location_hashtag(self):
+        fn = self._fn()
+        videos = [{"title": "test", "hashtags": ["hanoi", "food"], "location_created": ""}]
+        result = fn(videos)
+        assert result["primary"] is not None
+        assert "Hanoi" in result["primary"]
+
+    def test_api_location_gives_high_confidence(self):
+        fn = self._fn()
+        videos = [{
+            "title": "test video",
+            "hashtags": [],
+            "location_created": "Ho Chi Minh City",
+            "video_url": "https://tiktok.com/video/123",
+        }]
+        result = fn(videos)
+        assert result["confidence"] == "high"
+        assert result["primary"] == "Ho Chi Minh City"
+        assert len(result["api_locations"]) == 1
+
+    def test_bio_keyword_detection(self):
+        fn = self._fn()
+        result = fn([], bio="I live in Saigon 🌴 #vietnam")
+        assert result["primary"] is not None
+
+    def test_multiple_videos_ranked_by_frequency(self):
+        fn = self._fn()
+        videos = [
+            {"title": "hanoi trip", "hashtags": ["hanoi"], "location_created": ""},
+            {"title": "hanoi again", "hashtags": ["hanoi"], "location_created": ""},
+            {"title": "danang visit", "hashtags": ["danang"], "location_created": ""},
+        ]
+        result = fn(videos)
+        # Hanoi mentioned more often — should rank highest
+        assert "Hanoi" in result["primary"]
+
+    def test_inferred_locations_structure(self):
+        fn = self._fn()
+        videos = [{"title": "", "hashtags": ["saigon"], "location_created": ""}]
+        result = fn(videos)
+        for loc in result["inferred_locations"]:
+            assert "location" in loc
+            assert "mention_count" in loc
+
+
+# ── export_tiktok_html ────────────────────────────────────────────────────────
+
+class TestExportTikTokHtml:
+    def _fn(self):
+        from modules.social.tiktok import export_tiktok_html
+        return export_tiktok_html
+
+    def _sample_data(self):
+        return {
+            "username": "testuser",
+            "platform": "TikTok",
+            "profile_url": "https://www.tiktok.com/@testuser",
+            "exists": True,
+            "is_public": True,
+            "display_name": "Test User",
+            "bio": "Hello from Hanoi 🌿 ig: test_ig",
+            "bio_intel": {"urls": [], "emails": ["test@example.com"], "cross_platform": ["test_ig"], "phone_hints": []},
+            "profile_pic": None,
+            "is_verified": False,
+            "private_account": False,
+            "region": "VN",
+            "user_id": "123456789",
+            "follower_count": 50000,
+            "following_count": 300,
+            "likes_count": 1000000,
+            "video_count": 200,
+            "engagement_rate": 10.0,
+            "recent_videos": [
+                {"title": "My first video", "play_count": 10000, "like_count": 500,
+                 "comment_count": 30, "video_url": "https://tiktok.com/video/1",
+                 "location_created": "Hanoi"},
+            ],
+            "video_analysis": {"avg_play_count": 10000, "avg_like_count": 500, "top_hashtags": [{"tag": "hanoi", "count": 3}]},
+            "phone_osint": [{"raw": "0901234567", "valid": True, "e164": "+84901234567",
+                              "number_type": "Mobile", "location": "Vietnam", "carrier": "Viettel",
+                              "timezones": ["Asia/Ho_Chi_Minh"]}],
+            "geolocation_hints": {"primary": "Hanoi, Vietnam", "confidence": "medium",
+                                   "inferred_locations": [{"location": "Hanoi, Vietnam", "mention_count": 3}],
+                                   "api_locations": [{"location": "Hanoi", "video_url": "", "confidence": "high"}]},
+            "web_archive": {"available": True, "snapshots": 5, "earliest": "2022-01-01",
+                            "latest": "2024-06-01", "archive_search": "https://web.archive.org/",
+                            "recent": [{"date": "2024-06-01", "wayback_url": "https://web.archive.org/web/1/"}]},
+            "reverse_image_links": [],
+            "pivot_links": {"username_search": [{"tool": "WhatsMyName", "url": "https://whatsmyname.app/?q=testuser", "note": "600+ platforms"}]},
+            "data_sources": ["HTMLScrape"],
+            "security_notes": ["Example note"],
+            "dorks": [{"label": "Profile", "query": "site:tiktok.com @testuser", "url": "https://google.com"}],
+        }
+
+    def test_creates_html_file(self, tmp_path):
+        fn = self._fn()
+        out = str(tmp_path / "report.html")
+        result_path = fn(self._sample_data(), output_path=out)
+        assert result_path == out
+        import os
+        assert os.path.exists(out)
+
+    def test_html_contains_username(self, tmp_path):
+        fn = self._fn()
+        out = str(tmp_path / "report.html")
+        fn(self._sample_data(), output_path=out)
+        content = open(out).read()
+        assert "testuser" in content
+
+    def test_html_contains_follower_count(self, tmp_path):
+        fn = self._fn()
+        out = str(tmp_path / "report.html")
+        fn(self._sample_data(), output_path=out)
+        content = open(out).read()
+        assert "50,000" in content
+
+    def test_html_contains_phone_data(self, tmp_path):
+        fn = self._fn()
+        out = str(tmp_path / "report.html")
+        fn(self._sample_data(), output_path=out)
+        content = open(out).read()
+        assert "+84901234567" in content
+
+    def test_html_contains_geolocation(self, tmp_path):
+        fn = self._fn()
+        out = str(tmp_path / "report.html")
+        fn(self._sample_data(), output_path=out)
+        content = open(out).read()
+        assert "Hanoi" in content
+
+    def test_default_output_path_generated(self, tmp_path, monkeypatch):
+        import os
+        monkeypatch.chdir(tmp_path)
+        fn = self._fn()
+        result_path = fn(self._sample_data())
+        assert result_path.startswith("tiktok_testuser_")
+        assert result_path.endswith(".html")
+        assert os.path.exists(result_path)
+
+    def test_html_is_valid_structure(self, tmp_path):
+        fn = self._fn()
+        out = str(tmp_path / "report.html")
+        fn(self._sample_data(), output_path=out)
+        content = open(out).read()
+        assert "<!DOCTYPE html>" in content
+        assert "</html>" in content
+        assert "<table" in content
