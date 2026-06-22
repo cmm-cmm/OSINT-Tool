@@ -1489,135 +1489,10 @@ def tiktok_recon(
     tokapi_key: str | None = None,
     tiktok_api_key: str | None = None,
 ) -> dict:
-    """
-    Gather public OSINT from a TikTok profile.
-    Source priority: TokAPI → TikTok API23 → oEmbed (public, no key needed).
-    """
-    username = username.lstrip("@").strip()
-    profile_url = f"https://www.tiktok.com/@{username}"
+    """Gather public OSINT from a TikTok profile. Delegates to modules.social.tiktok."""
+    from modules.social.tiktok import tiktok_recon as _tiktok_recon
+    return _tiktok_recon(username, tokapi_key=tokapi_key, tiktok_api_key=tiktok_api_key)
 
-    result = {
-        "username": username,
-        "platform": "TikTok",
-        "profile_url": profile_url,
-        "exists": False,
-        "is_public": False,
-        "display_name": None,
-        "bio": None,
-        "profile_pic": None,
-        "follower_count": None,
-        "following_count": None,
-        "likes_count": None,
-        "video_count": None,
-        "is_verified": False,
-        "region": None,
-        "data_sources": [],
-        "security_notes": [],
-        "dorks": [],
-    }
-
-    # 1. TokAPI (preferred RapidAPI source)
-    api_data = None
-    if tokapi_key:
-        api_data = _try_tiktok_tokapi(username, tokapi_key)
-        if api_data:
-            result["data_sources"].append("TokAPI")
-
-    # 2. TikTok API23 (fallback RapidAPI source)
-    if not api_data and tiktok_api_key:
-        api_data = _try_tiktok_api23(username, tiktok_api_key)
-        if api_data:
-            result["data_sources"].append("TikTok API23")
-
-    # Parse RapidAPI response fields
-    if api_data:
-        u = api_data.get("user", {})
-        s = api_data.get("stats", {})
-        result["exists"] = True
-        result["is_public"] = True
-        result["display_name"] = u.get("nickname") or None
-        result["bio"] = u.get("signature") or None
-        result["profile_pic"] = u.get("avatarLarger") or None
-        result["is_verified"] = bool(u.get("verified", False))
-        result["region"] = u.get("region") or None
-        result["follower_count"] = s.get("followerCount")
-        result["following_count"] = s.get("followingCount")
-        result["likes_count"] = s.get("heartCount")
-        result["video_count"] = s.get("videoCount")
-
-    # 3. oEmbed API — always attempt; fills gaps when no RapidAPI key is configured
-    try:
-        oembed = requests.get(
-            "https://www.tiktok.com/oembed",
-            params={"url": profile_url},
-            headers=HEADERS,
-            timeout=10,
-            verify=True,
-        )
-        if oembed.status_code == 200:
-            data = oembed.json()
-            result["exists"] = True
-            result["is_public"] = True
-            if not result["display_name"]:
-                result["display_name"] = data.get("author_name")
-            if not result["profile_pic"]:
-                result["profile_pic"] = data.get("thumbnail_url")
-            result["data_sources"].append("oEmbed")
-    except Exception:
-        pass
-
-    # ── Security observations ──────────────────────────────────────────────
-    if not result["data_sources"]:
-        result["security_notes"].append(
-            "No API key configured — only oEmbed used. Add TOKAPI_KEY or TIKTOK_API_KEY to .env for full data."
-        )
-    if result["exists"]:
-        if not result["profile_pic"]:
-            result["security_notes"].append(
-                "No profile picture detected — may be a new, blank, or private account."
-            )
-        if username.isdigit():
-            result["security_notes"].append(
-                "Numeric-only username — unusual, may indicate an auto-generated account."
-            )
-        if len(username) < 4:
-            result["security_notes"].append(
-                "Very short username — could be a reserved brand name or impersonation attempt."
-            )
-        if _SUSPICIOUS_USER_RE.match(username):
-            result["security_notes"].append(
-                "Username pattern (letters + many numbers/underscores) is typical of bot or auto-generated accounts."
-            )
-        brand_re = re.compile(r'(facebook|google|apple|tiktok|youtube|shopee|lazada|viettel|vnpay)\d+', re.IGNORECASE)
-        if brand_re.search(username):
-            result["security_notes"].append(
-                "Username contains a well-known brand name with appended digits — possible impersonation account."
-            )
-    else:
-        result["security_notes"].append(
-            "TikTok account not found or profile is set to private."
-        )
-
-    # Generate dorks
-    q = result["display_name"] or username
-    result["dorks"] = [
-        {
-            "label": "TikTok profile search",
-            "query": f'site:tiktok.com "@{username}"',
-            "url": f'https://www.google.com/search?q=site%3Atiktok.com+%22%40{username}%22',
-        },
-        {
-            "label": "Cross-platform identity",
-            "query": f'"{q}" tiktok OR instagram OR facebook OR youtube',
-            "url": f'https://www.google.com/search?q=%22{q.replace(" ", "+")}%22+tiktok+OR+instagram+OR+facebook',
-        },
-        {
-            "label": "Leaked data / mentions",
-            "query": f'"{q}" breach OR leak OR exposed OR data',
-            "url": f'https://www.google.com/search?q=%22{q.replace(" ", "+")}%22+breach+OR+leak+OR+exposed',
-        },
-    ]
-    return result
 
 
 # ─── Print helpers ───────────────────────────────────────────────────────────
@@ -2002,53 +1877,9 @@ def print_facebook_results(data: dict):
 
 
 def print_tiktok_results(data: dict):
-    status_text = (
-        "[green]✓ Public[/green]" if data["is_public"]
-        else "[red]✗ Not Found / Private[/red]"
-    )
-    console.print(f"\n[bold red]═══ TikTok: @{data['username']} ═══[/bold red]")
-    console.print(f"  URL          : [cyan]{data['profile_url']}[/cyan]")
-    console.print(f"  Status       : {status_text}")
-    if data.get("display_name"):
-        verified = " [bold yellow]✓ Verified[/bold yellow]" if data.get("is_verified") else ""
-        console.print(f"  Display Name : [bold white]{data['display_name']}[/bold white]{verified}")
-    if data.get("bio"):
-        console.print(f"  Bio          : [dim]{data['bio'][:160]}[/dim]")
-    if data.get("region"):
-        console.print(f"  Region       : {data['region']}")
-
-    # Stats row
-    stats = []
-    if data.get("follower_count") is not None:
-        fc = data["follower_count"]
-        stats.append(f"[cyan]{fc:,}[/cyan] followers" if isinstance(fc, int) else f"[cyan]{fc}[/cyan] followers")
-    if data.get("following_count") is not None:
-        fwg = data["following_count"]
-        stats.append(f"[cyan]{fwg:,}[/cyan] following" if isinstance(fwg, int) else f"[cyan]{fwg}[/cyan] following")
-    if data.get("likes_count") is not None:
-        lc = data["likes_count"]
-        stats.append(f"[cyan]{lc:,}[/cyan] likes" if isinstance(lc, int) else f"[cyan]{lc}[/cyan] likes")
-    if data.get("video_count") is not None:
-        vc = data["video_count"]
-        stats.append(f"[cyan]{vc:,}[/cyan] videos" if isinstance(vc, int) else f"[cyan]{vc}[/cyan] videos")
-    if stats:
-        console.print(f"  Stats        : {' | '.join(stats)}")
-
-    if data.get("profile_pic"):
-        console.print(f"  Profile Pic  : [link={data['profile_pic']}][cyan]View image ↗[/cyan][/link]")
-    if data.get("data_sources"):
-        console.print(f"  Data Sources : [dim]{', '.join(data['data_sources'])}[/dim]")
-
-    if data.get("security_notes"):
-        console.print("\n  [bold yellow]⚠ Security Observations:[/bold yellow]")
-        for note in data["security_notes"]:
-            console.print(f"    [yellow]• {note}[/yellow]")
-
-    if data.get("dorks"):
-        console.print("\n  [bold]Investigation Dorks:[/bold]")
-        for d in data["dorks"]:
-            console.print(f"    [dim]{d['label']}[/dim]: [cyan]{d['query']}[/cyan]")
-            console.print(f"      [link={d['url']}][blue]Open in Google ↗[/blue][/link]")
+    """Delegates to the upgraded modules.social.tiktok implementation."""
+    from modules.social.tiktok import print_tiktok_results as _print
+    _print(data)
 
 
 # ─────────────────────────────────────────────
