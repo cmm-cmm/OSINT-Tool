@@ -175,8 +175,13 @@ def _try_web_api(username: str) -> dict | None:
 
 def _try_nextdata_scrape(username: str) -> dict | None:
     """
-    Scrape TikTok profile page and extract __NEXT_DATA__ JSON
-    embedded by Next.js SSR — works on public profiles.
+    Scrape TikTok profile page and extract embedded JSON data.
+
+    TikTok has used several embedded-data formats over time (newest first):
+      1. __UNIVERSAL_DATA_FOR_REHYDRATION__  (2024-2025, current)
+      2. SIGI_STATE                           (2023-2024)
+      3. __NEXT_DATA__                        (legacy)
+    All three are tried in order.
     """
     try:
         r = requests.get(
@@ -188,29 +193,48 @@ def _try_nextdata_scrape(username: str) -> dict | None:
         if r.status_code != 200:
             return None
 
-        # Extract __NEXT_DATA__ JSON blob
-        m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(\{.*?\})</script>', r.text, re.DOTALL)
-        if not m:
-            # Try SIGI_STATE (newer TikTok web format)
-            m2 = re.search(r'<script id="SIGI_STATE"[^>]*>(\{.*?\})</script>', r.text, re.DOTALL)
-            if not m2:
-                return None
-            blob = json.loads(m2.group(1))
-            # SIGI_STATE structure
-            user_detail = blob.get("UserPage", {}).get("userInfo", {})
-        else:
-            blob = json.loads(m.group(1))
-            # __NEXT_DATA__ → props.pageProps.userInfo
+        html = r.text
+
+        # ── Format 1: __UNIVERSAL_DATA_FOR_REHYDRATION__ (current 2024-2025) ──
+        m1 = re.search(
+            r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(\{.*?\})</script>',
+            html, re.DOTALL,
+        )
+        if m1:
+            blob = json.loads(m1.group(1))
+            # Structure: blob["__DEFAULT_SCOPE__"]["webapp.user-detail"]["userInfo"]
             user_detail = (
-                blob.get("props", {})
-                .get("pageProps", {})
+                blob.get("__DEFAULT_SCOPE__", {})
+                .get("webapp.user-detail", {})
                 .get("userInfo", {})
             )
+            u = user_detail.get("user", {})
+            s = user_detail.get("stats", {})
+            if u.get("nickname") or u.get("uniqueId"):
+                return {"user": u, "stats": s, "source": "HTMLScrape(URD)", "sec_uid": u.get("secUid", "")}
 
-        u = user_detail.get("user", {})
-        s = user_detail.get("stats", {})
-        if u.get("nickname") or u.get("uniqueId"):
-            return {"user": u, "stats": s, "source": "HTMLScrape", "sec_uid": u.get("secUid", "")}
+        # ── Format 2: SIGI_STATE ──────────────────────────────────────────────
+        m2 = re.search(r'<script id="SIGI_STATE"[^>]*>(\{.*?\})</script>', html, re.DOTALL)
+        if m2:
+            blob = json.loads(m2.group(1))
+            user_detail = blob.get("UserPage", {}).get("userInfo", {})
+            u = user_detail.get("user", {})
+            s = user_detail.get("stats", {})
+            if u.get("nickname") or u.get("uniqueId"):
+                return {"user": u, "stats": s, "source": "HTMLScrape(SIGI)", "sec_uid": u.get("secUid", "")}
+
+        # ── Format 3: __NEXT_DATA__ (legacy) ──────────────────────────────────
+        m3 = re.search(r'<script id="__NEXT_DATA__"[^>]*>(\{.*?\})</script>', html, re.DOTALL)
+        if m3:
+            blob = json.loads(m3.group(1))
+            user_detail = (
+                blob.get("props", {}).get("pageProps", {}).get("userInfo", {})
+            )
+            u = user_detail.get("user", {})
+            s = user_detail.get("stats", {})
+            if u.get("nickname") or u.get("uniqueId"):
+                return {"user": u, "stats": s, "source": "HTMLScrape(ND)", "sec_uid": u.get("secUid", "")}
+
     except Exception as exc:
         logger.debug("HTML scrape failed for %r: %s", username, exc)
     return None
@@ -237,6 +261,323 @@ def _try_oembed(username: str) -> dict | None:
     except Exception as exc:
         logger.debug("oEmbed failed for %r: %s", username, exc)
     return None
+
+
+# ── Email / phone lookup ─────────────────────────────────────────────────────
+
+def lookup_by_email_or_phone(
+    query: str,
+    api_key: str = "",
+) -> dict:
+    """
+    Find a TikTok account associated with an email address or phone number.
+
+    Uses the "tiktok-email-phone-lookup" RapidAPI endpoint.
+    Returns empty dict if no key or no result.
+
+    Parameters
+    ----------
+    query:
+        Email address (e.g. "user@example.com") or phone number
+        in E.164 format (e.g. "+84901234567").
+    api_key:
+        RapidAPI key. Falls back to TOKAPI_KEY env var.
+    """
+    api_key = api_key or os.getenv("TOKAPI_KEY", "") or os.getenv("RAPIDAPI_KEY", "")
+    if not api_key:
+        return {"error": "No RapidAPI key — set TOKAPI_KEY or RAPIDAPI_KEY in .env"}
+
+    is_email = "@" in query
+    try:
+        endpoint = (
+            "https://tiktok-email-phone-lookup.p.rapidapi.com/v1/user/email"
+            if is_email else
+            "https://tiktok-email-phone-lookup.p.rapidapi.com/v1/user/phone"
+        )
+        r = requests.get(
+            endpoint,
+            params={"email": query} if is_email else {"phone": query},
+            headers={
+                "X-RapidAPI-Key": api_key,
+                "X-RapidAPI-Host": "tiktok-email-phone-lookup.p.rapidapi.com",
+            },
+            timeout=_DEFAULT_TIMEOUT,
+        )
+        if r.status_code == 200:
+            d = r.json()
+            return {
+                "found":        bool(d.get("data")),
+                "username":     (d.get("data") or {}).get("unique_id"),
+                "display_name": (d.get("data") or {}).get("nickname"),
+                "user_id":      (d.get("data") or {}).get("uid"),
+                "avatar":       (d.get("data") or {}).get("avatar_thumb", {}).get("url_list", [None])[0],
+                "country":      (d.get("data") or {}).get("region"),
+                "raw":          d.get("data"),
+                "source":       "EmailPhoneLookup",
+            }
+        return {"found": False, "http_status": r.status_code}
+    except Exception as exc:
+        logger.debug("Email/phone lookup failed for %r: %s", query, exc)
+        return {"error": str(exc)}
+
+
+# ── yt-dlp video metadata ────────────────────────────────────────────────────
+
+def fetch_video_metadata_ytdlp(video_url: str) -> dict:
+    """
+    Extract rich metadata from a TikTok video URL using yt-dlp.
+
+    Returns metadata including: uploader, upload_date, view_count,
+    like_count, comment_count, description, hashtags, duration,
+    resolution, vcodec, acodec, device info from User-Agent fields.
+
+    Requires yt-dlp to be installed: pip install yt-dlp
+    """
+    try:
+        import yt_dlp  # type: ignore[import]
+    except ImportError:
+        return {"error": "yt-dlp not installed. Run: pip install yt-dlp"}
+
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": False,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            if not info:
+                return {"error": "No metadata returned"}
+            return {
+                "video_id":     info.get("id"),
+                "uploader":     info.get("uploader"),
+                "uploader_id":  info.get("uploader_id"),
+                "upload_date":  info.get("upload_date"),
+                "title":        info.get("title"),
+                "description":  info.get("description", "")[:500],
+                "duration_sec": info.get("duration"),
+                "view_count":   info.get("view_count"),
+                "like_count":   info.get("like_count"),
+                "comment_count":info.get("comment_count"),
+                "repost_count": info.get("repost_count"),
+                "hashtags":     _HASHTAG_RE.findall(info.get("description", "")),
+                "resolution":   f"{info.get('width')}x{info.get('height')}" if info.get("width") else None,
+                "vcodec":       info.get("vcodec"),
+                "acodec":       info.get("acodec"),
+                "tbr":          info.get("tbr"),         # total bitrate kbps
+                "thumbnail":    info.get("thumbnail"),
+                "webpage_url":  info.get("webpage_url"),
+                "source":       "yt-dlp",
+            }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+# ── Web Archive CDX ───────────────────────────────────────────────────────────
+
+def check_web_archive(username: str, limit: int = 10) -> dict:
+    """
+    Query the Internet Archive's CDX API for cached snapshots of
+    a TikTok profile page.  Returns snapshot count, earliest/latest
+    dates, and direct Wayback Machine links.
+
+    No authentication required — CDX API is free and public.
+    API docs: https://github.com/internetarchive/wayback/tree/master/wayback-cdx-server
+    """
+    url_pattern = f"tiktok.com/@{username}"
+    try:
+        r = requests.get(
+            "http://web.archive.org/cdx/search/cdx",
+            params={
+                "url":        url_pattern,
+                "output":     "json",
+                "fl":         "timestamp,original,statuscode,digest",
+                "collapse":   "digest",
+                "limit":      limit,
+                "fastLatest": "true",
+            },
+            timeout=15,
+        )
+        if r.status_code != 200 or not r.text.strip():
+            return {"available": False, "snapshots": 0}
+
+        rows = r.json()
+        if not rows or len(rows) <= 1:
+            return {"available": False, "snapshots": 0}
+
+        # First row is the header
+        headers_row = rows[0]
+        data_rows   = rows[1:]
+
+        snapshots = []
+        for row in data_rows:
+            ts = row[0]  # YYYYMMDDHHmmss
+            orig = row[1]
+            status = row[2]
+            snapshots.append({
+                "timestamp": ts,
+                "date":      f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}",
+                "wayback_url": f"https://web.archive.org/web/{ts}/{orig}",
+                "status":    status,
+            })
+
+        return {
+            "available":    True,
+            "snapshots":    len(snapshots),
+            "earliest":     snapshots[-1]["date"] if snapshots else None,
+            "latest":       snapshots[0]["date"] if snapshots else None,
+            "archive_search": f"https://web.archive.org/web/*/{url_pattern}",
+            "recent":       snapshots[:5],
+        }
+    except Exception as exc:
+        logger.debug("Web Archive CDX failed for %r: %s", username, exc)
+        return {"available": False, "error": str(exc)}
+
+
+# ── Reverse image search helpers ─────────────────────────────────────────────
+
+def reverse_image_search_links(image_url: str | None, username: str = "") -> list[dict]:
+    """
+    Generate reverse-image-search links for a TikTok profile picture.
+
+    Returns links to: Google Lens, TinEye, Search4Faces (TikTok-optimised),
+    Yandex Images, PimEyes.
+
+    Note: PimEyes and FaceCheck.ID require human interaction;
+    the generated links open the upload page.
+    """
+    if not image_url:
+        return []
+
+    from urllib.parse import quote as _q
+    enc = _q(image_url, safe="")
+    return [
+        {
+            "engine":  "Google Lens",
+            "url":     f"https://lens.google.com/uploadbyurl?url={enc}",
+            "note":    "Best for landmark/object recognition; no face ID",
+        },
+        {
+            "engine":  "TinEye",
+            "url":     f"https://tineye.com/search?url={enc}",
+            "note":    "60B+ image index; shows first appearance date",
+        },
+        {
+            "engine":  "Search4Faces",
+            "url":     "https://search4faces.com/",
+            "note":    "Specialises in TikTok/VK face search — upload manually",
+        },
+        {
+            "engine":  "Yandex Images",
+            "url":     f"https://yandex.com/images/search?rpt=imageview&url={enc}",
+            "note":    "Strong face recognition, especially Eastern Europe/Asia",
+        },
+        {
+            "engine":  "PimEyes",
+            "url":     "https://pimeyes.com/",
+            "note":    "Advanced face search — upload manually; freemium",
+        },
+        {
+            "engine":  "FaceCheck.ID",
+            "url":     "https://facecheck.id/",
+            "note":    "Face-based OSINT — upload manually",
+        },
+    ]
+
+
+# ── Cross-platform OSINT pivot links ─────────────────────────────────────────
+
+def cross_platform_pivot_links(
+    username: str,
+    display_name: str | None = None,
+    bio_emails: list[str] | None = None,
+) -> dict:
+    """
+    Generate direct investigation links for cross-platform OSINT pivoting.
+
+    Includes Holehe (email check), Maigret / Sherlock (username),
+    WhatsMyName, IntelX, and breach-check services.
+    """
+    from urllib.parse import quote_plus as _qp
+    q_user = _qp(username)
+    q_name = _qp(display_name or username)
+
+    links: dict[str, list[dict]] = {
+        "username_search": [
+            {
+                "tool": "WhatsMyName",
+                "url":  f"https://whatsmyname.app/?q={q_user}",
+                "note": "600+ platforms",
+            },
+            {
+                "tool": "Instant Username Search",
+                "url":  f"https://instantusername.com/#/{q_user}",
+                "note": "Quick multi-platform check",
+            },
+            {
+                "tool": "NameCheckr",
+                "url":  f"https://www.namecheckr.com/search?name={q_user}",
+                "note": "Username + domain availability",
+            },
+            {
+                "tool": "Social Searcher",
+                "url":  f"https://www.social-searcher.com/social-buzz/?q5={q_user}",
+                "note": "Cross-platform mentions",
+            },
+        ],
+        "breach_lookup": [
+            {
+                "tool": "HaveIBeenPwned",
+                "url":  "https://haveibeenpwned.com/",
+                "note": "Email breach check — enter email manually",
+            },
+            {
+                "tool": "LeakCheck",
+                "url":  f"https://leakcheck.io/search?query={q_user}",
+                "note": "Email/username breach database",
+            },
+            {
+                "tool": "IntelX",
+                "url":  f"https://intelx.io/?s={q_user}",
+                "note": "Leak data, dark web, paste sites",
+            },
+        ],
+        "profile_search": [
+            {
+                "tool": "Google — profile pages",
+                "url":  f"https://www.google.com/search?q=%22{q_user}%22+site%3Atiktok.com",
+            },
+            {
+                "tool": "Wayback Machine",
+                "url":  f"https://web.archive.org/web/*/tiktok.com/%40{q_user}",
+                "note": "Historical snapshots",
+            },
+            {
+                "tool": "TikTok Quick Search (OSINT Combine)",
+                "url":  f"https://www.osintcombine.com/free-osint-tools/tiktok-quick-search",
+                "note": "Multi-field TikTok search",
+            },
+            {
+                "tool": "TTLookup.com",
+                "url":  f"https://ttlookup.com/",
+                "note": "Free email/username/stats lookup",
+            },
+        ],
+    }
+
+    if bio_emails:
+        email_links = []
+        for email in bio_emails[:3]:
+            eq = _qp(email)
+            email_links.append({
+                "email": email,
+                "hibp":  f"https://haveibeenpwned.com/account/{eq}",
+                "intel": f"https://intelx.io/?s={eq}",
+            })
+        links["email_pivot"] = email_links
+
+    return links
 
 
 # ── Private: video list ───────────────────────────────────────────────────────
@@ -543,6 +884,9 @@ def tiktok_recon(
     tiktok_api_key: str | None = None,
     fetch_videos: bool = True,
     max_videos: int = 12,
+    web_archive: bool = True,
+    reverse_image: bool = True,
+    pivot_links: bool = True,
 ) -> dict:
     """
     Gather comprehensive OSINT from a public TikTok profile.
@@ -559,6 +903,12 @@ def tiktok_recon(
         Whether to fetch recent video metadata (requires secUid).
     max_videos:
         Maximum number of recent videos to retrieve.
+    web_archive:
+        Query Internet Archive CDX API for historical profile snapshots.
+    reverse_image:
+        Generate reverse-image-search links for the profile picture.
+    pivot_links:
+        Generate cross-platform OSINT pivot links (Holehe, Maigret, HIBP).
 
     Returns
     -------
@@ -568,6 +918,7 @@ def tiktok_recon(
         private_account, region, user_id, sec_uid,
         follower_count, following_count, likes_count, video_count, friend_count,
         engagement_rate, recent_videos, video_analysis,
+        web_archive, reverse_image_links, pivot_links,
         data_sources, security_notes, dorks
     """
     username = username.lstrip("@").strip()
@@ -577,31 +928,34 @@ def tiktok_recon(
     profile_url = f"https://www.tiktok.com/@{username}"
 
     result: dict[str, Any] = {
-        "username":       username,
-        "platform":       "TikTok",
-        "profile_url":    profile_url,
-        "exists":         False,
-        "is_public":      False,
-        "display_name":   None,
-        "bio":            None,
-        "bio_intel":      {},
-        "profile_pic":    None,
-        "is_verified":    False,
-        "private_account": False,
-        "region":         None,
-        "user_id":        None,
-        "sec_uid":        "",
-        "follower_count":  None,
-        "following_count": None,
-        "likes_count":     None,
-        "video_count":     None,
-        "friend_count":    None,
-        "engagement_rate": None,
-        "recent_videos":   [],
-        "video_analysis":  {},
-        "data_sources":    [],
-        "security_notes":  [],
-        "dorks":           [],
+        "username":           username,
+        "platform":           "TikTok",
+        "profile_url":        profile_url,
+        "exists":             False,
+        "is_public":          False,
+        "display_name":       None,
+        "bio":                None,
+        "bio_intel":          {},
+        "profile_pic":        None,
+        "is_verified":        False,
+        "private_account":    False,
+        "region":             None,
+        "user_id":            None,
+        "sec_uid":            "",
+        "follower_count":     None,
+        "following_count":    None,
+        "likes_count":        None,
+        "video_count":        None,
+        "friend_count":       None,
+        "engagement_rate":    None,
+        "recent_videos":      [],
+        "video_analysis":     {},
+        "web_archive":        {},
+        "reverse_image_links": [],
+        "pivot_links":        {},
+        "data_sources":       [],
+        "security_notes":     [],
+        "dorks":              [],
     }
 
     # ── 1. RapidAPI sources ───────────────────────────────────────────────────
@@ -680,6 +1034,25 @@ def tiktok_recon(
 
     # ── 9. Investigation dorks ────────────────────────────────────────────────
     result["dorks"] = _build_dorks(username, result.get("display_name"))
+
+    # ── 10. Web Archive (Internet Archive CDX) ────────────────────────────────
+    if web_archive:
+        result["web_archive"] = check_web_archive(username)
+
+    # ── 11. Reverse image search links ────────────────────────────────────────
+    if reverse_image:
+        result["reverse_image_links"] = reverse_image_search_links(
+            result.get("profile_pic"), username
+        )
+
+    # ── 12. Cross-platform pivot links ────────────────────────────────────────
+    if pivot_links:
+        bio_emails = (result.get("bio_intel") or {}).get("emails", [])
+        result["pivot_links"] = cross_platform_pivot_links(
+            username,
+            result.get("display_name"),
+            bio_emails,
+        )
 
     return result
 
@@ -798,6 +1171,52 @@ def print_tiktok_results(data: dict) -> None:
         console.print("\n  [bold yellow]Security Observations:[/bold yellow]")
         for note in notes:
             console.print(f"    [yellow]⚠  {note}[/yellow]")
+
+    # Web Archive
+    wa = data.get("web_archive", {})
+    if wa.get("available"):
+        console.print("\n  [bold cyan]Web Archive (Internet Archive)[/bold cyan]")
+        console.print(f"    Snapshots found : [green]{wa['snapshots']}[/green]")
+        if wa.get("earliest"):
+            console.print(f"    Earliest capture: {wa['earliest']}")
+        if wa.get("latest"):
+            console.print(f"    Latest capture  : {wa['latest']}")
+        if wa.get("archive_search"):
+            console.print(f"    Browse all      : [link={wa['archive_search']}]{wa['archive_search']}[/link]")
+        recent = wa.get("recent", [])
+        if recent:
+            console.print("    Recent snapshots:")
+            for snap in recent[:3]:
+                console.print(
+                    f"      [dim]{snap['date']}[/dim]  "
+                    f"[link={snap['wayback_url']}]{snap['wayback_url'][:80]}[/link]"
+                )
+    elif wa.get("error"):
+        console.print(f"\n  [dim]Web Archive: error — {wa['error'][:60]}[/dim]")
+
+    # Reverse image search
+    ris = data.get("reverse_image_links", [])
+    if ris:
+        console.print("\n  [bold]Reverse Image Search:[/bold]")
+        for link in ris:
+            note = f" [dim]({link.get('note', '')})[/dim]" if link.get("note") else ""
+            console.print(f"    [cyan]{link['engine']}[/cyan]{note}")
+            console.print(f"      [link={link['url']}]{link['url'][:90]}[/link]")
+
+    # Cross-platform pivot links
+    pl = data.get("pivot_links", {})
+    if pl:
+        console.print("\n  [bold]Cross-Platform Pivot Links:[/bold]")
+        for category, items in pl.items():
+            label = category.replace("_", " ").title()
+            console.print(f"    [bold dim]{label}:[/bold dim]")
+            for item in (items if isinstance(items, list) else []):
+                tool = item.get("tool") or item.get("email", "")
+                url  = item.get("url") or item.get("hibp") or ""
+                note = f" [dim]— {item['note']}[/dim]" if item.get("note") else ""
+                console.print(f"      [cyan]{tool}[/cyan]{note}")
+                if url:
+                    console.print(f"        [link={url}]{url[:90]}[/link]")
 
     # Data sources
     sources = data.get("data_sources", [])
