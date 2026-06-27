@@ -778,6 +778,377 @@ def extract_geolocation_hints(
     }
 
 
+# ── Data Breach & Leak Intelligence ─────────────────────────────────────────
+
+def _calc_leak_risk(leak_intel: dict) -> str:
+    """
+    Calculate overall leak risk level from aggregated breach data.
+
+    Returns one of: "none" | "low" | "medium" | "high" | "critical"
+    """
+    sources      = leak_intel.get("total_breach_sources", 0)
+    has_password = leak_intel.get("has_exposed_passwords", False)
+    has_hibp     = any(
+        e.get("hibp_breach_count", 0) > 0
+        for e in leak_intel.get("email_leaks", [])
+    )
+    paste_found  = (leak_intel.get("paste_mentions") or {}).get("found", False)
+
+    if has_password or (has_hibp and sources >= 3):
+        return "critical"
+    if has_hibp or sources >= 3:
+        return "high"
+    if sources >= 2:
+        return "medium"
+    if sources >= 1 or paste_found:
+        return "low"
+    return "none"
+
+
+def check_tiktok_leaks(
+    username: str,
+    emails: list[str],
+    phone_e164_list: list[str],
+    display_name: str | None = None,
+    hibp_key: str = "",
+    breachdir_key: str = "",
+    dehashed_email: str = "",
+    dehashed_key: str = "",
+    snusbase_key: str = "",
+    leakcheck_key: str = "",
+    emailrep_key: str = "",
+    run_holehe: bool = False,
+    run_paste_check: bool = True,
+) -> dict:
+    """
+    Automatically check whether personal information linked to a TikTok
+    account appears in known data breaches or public paste sites.
+
+    Checks are layered from free → paid:
+      Free (no key):     LeakCheck public, EmailRep.io (1000/day free)
+      Free tier:         BreachDirectory (100/month RapidAPI free)
+      Optional paid:     HIBP ($3.95/mo), Dehashed ($5/mo), Snusbase ($2/mo)
+      Free subprocess:   Holehe (email → 120+ platforms, slow, opt-in)
+
+    Targets searched:
+      - Each email address found in the TikTok bio (up to 3)
+      - The TikTok username itself (LeakCheck + Dehashed username)
+      - Each validated phone number in E.164 format (up to 2)
+      - Paste site mentions of username and emails
+
+    Parameters
+    ----------
+    username:         TikTok username (already stripped of @)
+    emails:           Email addresses from bio_intel.emails
+    phone_e164_list:  Validated E.164 phones from phone_osint results
+    display_name:     Account display name (for richer dorks only)
+    hibp_key:         HIBP_API_KEY env var ($3.95/mo)
+    breachdir_key:    BREACHDIRECTORY_KEY env var (free tier)
+    dehashed_email:   DEHASHED_EMAIL env var ($5/mo)
+    dehashed_key:     DEHASHED_KEY env var ($5/mo)
+    snusbase_key:     SNUSBASE_KEY env var ($2/mo)
+    leakcheck_key:    LEAKCHECK_KEY env var (optional, raises rate limit)
+    emailrep_key:     EMAILREP_KEY env var (optional)
+    run_holehe:       Run holehe subprocess (slow, ~90s — disabled by default)
+    run_paste_check:  Search Pastebin for username/email mentions
+
+    Returns
+    -------
+    dict — see `leak_intel` key in tiktok_recon() return value.
+    """
+    try:
+        from modules.breach_check import (
+            check_leakcheck_public,
+            check_hibp_email,
+            check_dehashed,
+            check_snusbase,
+            check_holehe,
+            check_emailrep,
+            check_breachdirectory,
+        )
+    except ImportError as exc:
+        return {"error": f"breach_check module not available: {exc}"}
+
+    leak: dict = {
+        "risk_level":           "none",
+        "checked_identifiers":  [],
+        "total_breach_sources": 0,
+        "has_exposed_passwords": False,
+        "email_leaks":          [],
+        "username_leaks":       [],
+        "phone_leaks":          [],
+        "paste_mentions":       {"found": False, "username": {}, "emails": []},
+        "recommendations":      [],
+    }
+    total_sources = 0
+
+    # ── Email checks ───────────────────────────────────────────────────────────
+    for email in (emails or [])[:3]:
+        leak["checked_identifiers"].append(f"email:{email}")
+        entry: dict = {
+            "email":               email,
+            "leakcheck_found":     False,
+            "leakcheck_sources":   [],
+            "hibp_breach_count":   0,
+            "hibp_breaches":       [],
+            "hibp_paste_count":    0,
+            "dehashed_count":      0,
+            "dehashed_databases":  [],
+            "breachdirectory_found": False,
+            "snusbase_found":      False,
+            "emailrep_risk":       None,
+            "emailrep_suspicious": None,
+            "emailrep_credentials_leaked": False,
+            "holehe_sites":        [],
+        }
+
+        # 1. LeakCheck public (free, always run)
+        try:
+            lc = check_leakcheck_public(email)
+            if lc.get("found"):
+                entry["leakcheck_found"]   = True
+                entry["leakcheck_sources"] = lc.get("sources", [])
+                total_sources += 1
+        except Exception as exc:
+            logger.debug("LeakCheck email %r: %s", email, exc)
+
+        # 2. BreachDirectory (free tier 100/month)
+        if breachdir_key:
+            try:
+                bd = check_breachdirectory(email, breachdir_key)
+                if bd.get("found"):
+                    entry["breachdirectory_found"] = True
+                    total_sources += 1
+            except Exception as exc:
+                logger.debug("BreachDirectory email %r: %s", email, exc)
+
+        # 3. HIBP (paid, optional)
+        if hibp_key:
+            try:
+                hibp = check_hibp_email(email, hibp_key)
+                breaches = hibp.get("breaches") or []
+                pastes   = hibp.get("pastes")   or []
+                if breaches:
+                    entry["hibp_breach_count"] = len(breaches)
+                    entry["hibp_breaches"] = [
+                        {
+                            "name":         b.get("name", ""),
+                            "date":         b.get("date", ""),
+                            "data_classes": b.get("data_classes", []),
+                            "description":  (b.get("description") or "")[:150],
+                        }
+                        for b in breaches
+                    ]
+                    total_sources += 1
+                if pastes:
+                    entry["hibp_paste_count"] = len(pastes)
+            except Exception as exc:
+                logger.debug("HIBP email %r: %s", email, exc)
+
+        # 4. Dehashed (paid, optional)
+        if dehashed_email and dehashed_key:
+            try:
+                dh = check_dehashed(email, "email", dehashed_email, dehashed_key)
+                if dh.get("found"):
+                    entry["dehashed_count"] = dh.get("total", 0)
+                    # Collect database names only — redact raw passwords
+                    dbs = set()
+                    for e in (dh.get("entries") or []):
+                        db = e.get("database_name", "")
+                        if db:
+                            dbs.add(db)
+                        # Flag if password or hash is exposed
+                        if e.get("password") or e.get("hashed_password"):
+                            leak["has_exposed_passwords"] = True
+                    entry["dehashed_databases"] = list(dbs)
+                    total_sources += 1
+            except Exception as exc:
+                logger.debug("Dehashed email %r: %s", email, exc)
+
+        # 5. Snusbase (paid, optional)
+        if snusbase_key:
+            try:
+                sn = check_snusbase(email, "email", snusbase_key)
+                if sn.get("found"):
+                    entry["snusbase_found"] = True
+                    total_sources += 1
+                    for e in (sn.get("entries") or []):
+                        if e.get("password") or e.get("hash"):
+                            leak["has_exposed_passwords"] = True
+            except Exception as exc:
+                logger.debug("Snusbase email %r: %s", email, exc)
+
+        # 6. EmailRep.io (1000/day free)
+        try:
+            er = check_emailrep(email, emailrep_key or None)
+            entry["emailrep_risk"]                = er.get("reputation")
+            entry["emailrep_suspicious"]          = er.get("suspicious")
+            entry["emailrep_credentials_leaked"]  = bool(er.get("credentials_leaked"))
+            if er.get("credentials_leaked"):
+                total_sources += 1
+        except Exception as exc:
+            logger.debug("EmailRep email %r: %s", email, exc)
+
+        # 7. Holehe (free subprocess, slow, opt-in)
+        if run_holehe:
+            try:
+                ho = check_holehe(email)
+                entry["holehe_sites"] = [
+                    s.get("name", "") for s in (ho.get("registered_sites") or [])
+                ]
+            except Exception as exc:
+                logger.debug("Holehe email %r: %s", email, exc)
+
+        leak["email_leaks"].append(entry)
+
+    # ── Username checks ────────────────────────────────────────────────────────
+    leak["checked_identifiers"].append(f"username:{username}")
+    u_entry: dict = {
+        "username":          username,
+        "leakcheck_found":   False,
+        "leakcheck_sources": [],
+        "dehashed_count":    0,
+        "dehashed_databases":[],
+    }
+
+    # LeakCheck by username (free)
+    try:
+        lc_u = check_leakcheck_public(username)
+        if lc_u.get("found"):
+            u_entry["leakcheck_found"]   = True
+            u_entry["leakcheck_sources"] = lc_u.get("sources", [])
+            total_sources += 1
+    except Exception as exc:
+        logger.debug("LeakCheck username %r: %s", username, exc)
+
+    # Dehashed by username (paid, optional)
+    if dehashed_email and dehashed_key:
+        try:
+            dh_u = check_dehashed(username, "username", dehashed_email, dehashed_key)
+            if dh_u.get("found"):
+                u_entry["dehashed_count"] = dh_u.get("total", 0)
+                dbs_u = set()
+                for e in (dh_u.get("entries") or []):
+                    db = e.get("database_name", "")
+                    if db:
+                        dbs_u.add(db)
+                    if e.get("password") or e.get("hashed_password"):
+                        leak["has_exposed_passwords"] = True
+                u_entry["dehashed_databases"] = list(dbs_u)
+                total_sources += 1
+        except Exception as exc:
+            logger.debug("Dehashed username %r: %s", username, exc)
+
+    leak["username_leaks"].append(u_entry)
+
+    # ── Phone checks ───────────────────────────────────────────────────────────
+    for phone in (phone_e164_list or [])[:2]:
+        leak["checked_identifiers"].append(f"phone:{phone}")
+        p_entry: dict = {
+            "phone":           phone,
+            "dehashed_count":  0,
+            "dehashed_databases": [],
+            "snusbase_found":  False,
+        }
+
+        if dehashed_email and dehashed_key:
+            try:
+                dh_p = check_dehashed(phone, "phone", dehashed_email, dehashed_key)
+                if dh_p.get("found"):
+                    p_entry["dehashed_count"] = dh_p.get("total", 0)
+                    dbs_p = {e.get("database_name", "") for e in (dh_p.get("entries") or [])}
+                    p_entry["dehashed_databases"] = list(filter(None, dbs_p))
+                    total_sources += 1
+                    for e in (dh_p.get("entries") or []):
+                        if e.get("password") or e.get("hashed_password"):
+                            leak["has_exposed_passwords"] = True
+            except Exception as exc:
+                logger.debug("Dehashed phone %r: %s", phone, exc)
+
+        if snusbase_key:
+            try:
+                # Snusbase uses "email" type but matches phone numbers too
+                sn_p = check_snusbase(phone, "email", snusbase_key)
+                if sn_p.get("found"):
+                    p_entry["snusbase_found"] = True
+                    total_sources += 1
+            except Exception as exc:
+                logger.debug("Snusbase phone %r: %s", phone, exc)
+
+        leak["phone_leaks"].append(p_entry)
+
+    # ── Paste site mentions ────────────────────────────────────────────────────
+    if run_paste_check:
+        try:
+            from modules.darkweb_monitor import check_pastebin
+            p_user = check_pastebin(username)
+            if p_user.get("found"):
+                total_sources += 1
+            leak["paste_mentions"]["username"] = {
+                "found": bool(p_user.get("found")),
+                "count": p_user.get("mentions", 0),
+                "urls":  (p_user.get("urls") or [])[:5],
+            }
+            paste_found_any = bool(p_user.get("found"))
+
+            email_paste_results = []
+            for email in (emails or [])[:2]:
+                try:
+                    p_e = check_pastebin(email)
+                    if p_e.get("found"):
+                        total_sources += 1
+                        paste_found_any = True
+                    email_paste_results.append({
+                        "email": email,
+                        "found": bool(p_e.get("found")),
+                        "count": p_e.get("mentions", 0),
+                        "urls":  (p_e.get("urls") or [])[:3],
+                    })
+                except Exception:
+                    pass
+
+            leak["paste_mentions"]["emails"] = email_paste_results
+            leak["paste_mentions"]["found"]  = paste_found_any
+
+        except Exception as exc:
+            logger.debug("Paste check failed: %s", exc)
+
+    # ── Final scoring & recommendations ───────────────────────────────────────
+    leak["total_breach_sources"] = total_sources
+    leak["risk_level"] = _calc_leak_risk(leak)
+
+    recs: list[str] = []
+    for el in leak["email_leaks"]:
+        src_count = len(el.get("leakcheck_sources", [])) + el.get("hibp_breach_count", 0) + el.get("dehashed_count", 0)
+        if src_count > 0:
+            recs.append(
+                f"Email {el['email']} xuất hiện trong {src_count} nguồn breach — "
+                "nên đổi mật khẩu và bật 2FA trên các dịch vụ liên quan."
+            )
+        if el.get("emailrep_credentials_leaked"):
+            recs.append(f"EmailRep.io xác nhận thông tin đăng nhập của {el['email']} đã bị lộ.")
+    for ul in leak["username_leaks"]:
+        if ul.get("leakcheck_found") or ul.get("dehashed_count"):
+            recs.append(
+                f"Username '{ul['username']}' tìm thấy trong breach database. "
+                "Kiểm tra các tài khoản cùng username trên nền tảng khác."
+            )
+    if leak.get("has_exposed_passwords"):
+        recs.append(
+            "Mật khẩu / hash mật khẩu bị lộ trong dữ liệu breach — "
+            "đây là rủi ro nghiêm trọng. Đổi mật khẩu ngay lập tức."
+        )
+    um = leak["paste_mentions"].get("username", {})
+    if um.get("found"):
+        recs.append(
+            f"Username '{username}' xuất hiện trong {um.get('count', 0)} paste công khai "
+            "— có thể là phần của danh sách rò rỉ hoặc spam list."
+        )
+    leak["recommendations"] = recs
+
+    return leak
+
+
 # ── HTML Report Export ────────────────────────────────────────────────────────
 
 def export_tiktok_html(data: dict, output_path: str = "") -> str:
@@ -972,6 +1343,95 @@ def export_tiktok_html(data: dict, output_path: str = "") -> str:
             pl_html += "</ul>"
         pl_html += "</div>"
 
+    # ── breach / leak intel ───────────────────────────────────────────────────
+    li = data.get("leak_intel", {})
+    leak_html = ""
+    if li:
+        risk = li.get("risk_level", "none")
+        risk_colors = {
+            "critical": ("#b71c1c", "#ffcdd2"),
+            "high":     ("#bf360c", "#ffe0b2"),
+            "medium":   ("#e65100", "#fff3e0"),
+            "low":      ("#1565c0", "#e3f2fd"),
+            "none":     ("#1b5e20", "#e8f5e9"),
+        }
+        bg, fg = risk_colors.get(risk, ("#333", "#eee"))
+        risk_badge = (
+            f"<span style='background:{bg};color:{fg};padding:3px 10px;"
+            f"border-radius:8px;font-weight:bold;font-size:0.8rem'>{risk.upper()}</span>"
+        )
+        pw_warn = ""
+        if li.get("has_exposed_passwords"):
+            pw_warn = "<p class='warn-box'>⚠ Password / hash mật khẩu bị lộ trong breach records!</p>"
+
+        # email leaks table
+        email_rows = ""
+        for el in li.get("email_leaks", []):
+            lc_srcs = ", ".join((el.get("leakcheck_sources") or [])[:4])
+            hibp_n  = el.get("hibp_breach_count", 0)
+            dh_n    = el.get("dehashed_count", 0)
+            er_risk = el.get("emailrep_risk") or "—"
+            cred    = "Yes" if el.get("emailrep_credentials_leaked") else "No"
+            holehe  = ", ".join(el.get("holehe_sites", [])[:5]) or "—"
+            breached = bool(lc_srcs or hibp_n or dh_n or el.get("breachdirectory_found") or el.get("snusbase_found"))
+            row_bg  = "#2d1515" if breached else "#152d15"
+            email_rows += f"""<tr style='background:{row_bg}'>
+              <td><strong>{_e(el['email'])}</strong></td>
+              <td>{_e(lc_srcs or ('Yes' if el.get('leakcheck_found') else 'No'))}</td>
+              <td>{hibp_n}</td><td>{dh_n}</td>
+              <td>{er_risk} (creds:{cred})</td>
+              <td style='font-size:0.8rem'>{_e(holehe)}</td>
+            </tr>"""
+            # HIBP breach detail
+            for b in el.get("hibp_breaches", [])[:3]:
+                dc = _e(", ".join(b.get("data_classes", [])[:4]))
+                email_rows += (
+                    f"<tr style='background:#1a0808'><td colspan='6' style='padding-left:30px;font-size:0.8rem'>"
+                    f"↳ {_e(b.get('name',''))} ({_e(b.get('date','?'))}) — {dc}</td></tr>"
+                )
+
+        # username + phone leaks
+        ident_rows = ""
+        for ul in li.get("username_leaks", []):
+            found_u = ul.get("leakcheck_found") or ul.get("dehashed_count", 0)
+            srcs_u  = ", ".join(ul.get("leakcheck_sources", [])[:3]) or ("Yes" if found_u else "No")
+            dh_u    = ul.get("dehashed_count", 0)
+            ident_rows += f"<tr><td>username</td><td>{_e(ul['username'])}</td><td>{_e(srcs_u)}</td><td>{dh_u}</td></tr>"
+        for plk in li.get("phone_leaks", []):
+            dh_p  = plk.get("dehashed_count", 0)
+            sn_p  = "Yes" if plk.get("snusbase_found") else "No"
+            ident_rows += f"<tr><td>phone</td><td>{_e(plk['phone'])}</td><td>Snusbase:{sn_p}</td><td>{dh_p}</td></tr>"
+
+        # paste mentions
+        pm = li.get("paste_mentions", {})
+        pm_html = ""
+        um_pm = pm.get("username", {})
+        if um_pm.get("found"):
+            paste_links = " ".join(
+                f"<a href='{_e(u)}' target='_blank'>{_e(u[:60])}</a>"
+                for u in (um_pm.get("urls") or [])[:3]
+            )
+            pm_html += f"<p>Username paste mentions: {_e(um_pm.get('count',0))} — {paste_links}</p>"
+
+        # recommendations
+        recs_html = ""
+        if li.get("recommendations"):
+            items_r = "".join(f"<li>{_e(r)}</li>" for r in li["recommendations"])
+            recs_html = f"<ul class='recs'>{items_r}</ul>"
+
+        leak_html = f"""
+        <div class='card' style='border-left:4px solid {bg}'>
+          <h3>Data Breach Intelligence &nbsp; {risk_badge}</h3>
+          <p>Breach sources found: <strong>{li.get('total_breach_sources',0)}</strong>
+             &nbsp;|&nbsp; Identifiers checked: {len(li.get('checked_identifiers',[]))}
+          </p>
+          {pw_warn}
+          {'<table><thead><tr><th>Email</th><th>LeakCheck</th><th>HIBP breaches</th><th>Dehashed</th><th>EmailRep</th><th>Holehe sites</th></tr></thead><tbody>' + email_rows + '</tbody></table>' if email_rows else ''}
+          {'<table><thead><tr><th>Type</th><th>Value</th><th>LeakCheck/Snusbase</th><th>Dehashed</th></tr></thead><tbody>' + ident_rows + '</tbody></table>' if ident_rows else ''}
+          {pm_html}
+          {recs_html}
+        </div>"""
+
     # ── dorks ─────────────────────────────────────────────────────────────────
     dorks = data.get("dorks", [])
     dorks_html = ""
@@ -1037,6 +1497,11 @@ def export_tiktok_html(data: dict, output_path: str = "") -> str:
   .invalid {{ color: #f44336; }}
   .footer  {{ color: #555; font-size: 0.75rem; margin-top: 24px; text-align: center; }}
   .grid2   {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
+  .warn-box {{ background:#4a0000; color:#ffcdd2; padding:8px 12px; border-radius:6px;
+               margin-bottom:10px; font-weight:bold; }}
+  .recs {{ background:#1a1a00; border:1px solid #555500; border-radius:6px;
+           padding:10px 20px; margin-top:10px; }}
+  .recs li {{ color: #ffe082; }}
   @media (max-width: 700px) {{ .grid2 {{ grid-template-columns: 1fr; }} }}
 </style>
 </head>
@@ -1066,6 +1531,7 @@ def export_tiktok_html(data: dict, output_path: str = "") -> str:
 
 {bio_html}
 {phone_section}
+{leak_html}
 {va_html}
 {videos_section}
 {wa_html}
@@ -1404,6 +1870,8 @@ def tiktok_recon(
     pivot_links: bool = True,
     phone_osint: bool = True,
     geo_hints: bool = True,
+    leak_check: bool = False,
+    run_holehe: bool = False,
 ) -> dict:
     """
     Gather comprehensive OSINT from a public TikTok profile.
@@ -1430,6 +1898,14 @@ def tiktok_recon(
         Validate & enrich phone numbers found in bio (carrier, region, timezone).
     geo_hints:
         Extract geolocation hints from video metadata, hashtags, and bio text.
+    leak_check:
+        Automatically check emails/username/phones against breach databases.
+        Uses free services by default; set API keys in env for richer results.
+        Disabled by default — adds network latency per identifier.
+    run_holehe:
+        Run holehe subprocess to check which 120+ platforms an email is on.
+        Only active when leak_check=True. Very slow (~90s). Requires:
+        pip install holehe
 
     Returns
     -------
@@ -1441,7 +1917,7 @@ def tiktok_recon(
         engagement_rate, recent_videos, video_analysis,
         phone_osint, geolocation_hints,
         web_archive, reverse_image_links, pivot_links,
-        data_sources, security_notes, dorks
+        leak_intel, data_sources, security_notes, dorks
     """
     username = username.lstrip("@").strip()
     tokapi_key  = tokapi_key  or os.getenv("TOKAPI_KEY", "")
@@ -1477,6 +1953,7 @@ def tiktok_recon(
         "web_archive":         {},
         "reverse_image_links": [],
         "pivot_links":         {},
+        "leak_intel":          {},
         "data_sources":        [],
         "security_notes":      [],
         "dorks":               [],
@@ -1591,6 +2068,27 @@ def tiktok_recon(
             bio_emails,
         )
 
+    # ── 15. Data breach & leak intelligence ───────────────────────────────────
+    if leak_check:
+        phones_e164 = [
+            ph["e164"] for ph in result.get("phone_osint", [])
+            if ph.get("e164")
+        ]
+        result["leak_intel"] = check_tiktok_leaks(
+            username        = username,
+            emails          = (result.get("bio_intel") or {}).get("emails", []),
+            phone_e164_list = phones_e164,
+            display_name    = result.get("display_name"),
+            hibp_key        = os.getenv("HIBP_API_KEY", ""),
+            breachdir_key   = os.getenv("BREACHDIRECTORY_KEY", ""),
+            dehashed_email  = os.getenv("DEHASHED_EMAIL", ""),
+            dehashed_key    = os.getenv("DEHASHED_KEY", ""),
+            snusbase_key    = os.getenv("SNUSBASE_KEY", ""),
+            leakcheck_key   = os.getenv("LEAKCHECK_KEY", ""),
+            emailrep_key    = os.getenv("EMAILREP_KEY", ""),
+            run_holehe      = run_holehe,
+        )
+
     return result
 
 
@@ -1690,6 +2188,89 @@ def print_tiktok_results(data: dict) -> None:
                     console.print(f"       Timezone(s): {', '.join(ph['timezones'])}")
             else:
                 console.print(f"    [red]✗[/red] {ph['raw']} — {ph.get('error', 'invalid')}")
+
+    # Data Breach Intelligence
+    li = data.get("leak_intel", {})
+    if li:
+        risk = li.get("risk_level", "none")
+        _risk_color = {
+            "critical": "bold red",
+            "high":     "red",
+            "medium":   "yellow",
+            "low":      "cyan",
+            "none":     "green",
+        }.get(risk, "dim")
+        console.print(
+            f"\n  [bold magenta]Data Breach Intelligence[/bold magenta]  "
+            f"Risk: [{_risk_color}]{risk.upper()}[/{_risk_color}]"
+        )
+        console.print(
+            f"    Identifiers checked : {len(li.get('checked_identifiers', []))}  |  "
+            f"Breach sources found: [bold]{li.get('total_breach_sources', 0)}[/bold]"
+        )
+        if li.get("has_exposed_passwords"):
+            console.print("    [bold red]⚠  Password/hash exposed in breach records![/bold red]")
+
+        for el in li.get("email_leaks", []):
+            lc_srcs = el.get("leakcheck_sources") or []
+            hibp_n  = el.get("hibp_breach_count", 0)
+            dh_n    = el.get("dehashed_count", 0)
+            found   = bool(lc_srcs or hibp_n or dh_n or el.get("breachdirectory_found") or el.get("snusbase_found"))
+            icon    = "[red]✗[/red]" if found else "[green]✓[/green]"
+            console.print(f"\n    {icon} Email: [bold]{el['email']}[/bold]")
+            if lc_srcs:
+                console.print(f"       LeakCheck  : {', '.join(lc_srcs[:4])}")
+            if hibp_n:
+                console.print(f"       HIBP       : {hibp_n} breach(es), {el.get('hibp_paste_count', 0)} paste(s)")
+                for b in el.get("hibp_breaches", [])[:3]:
+                    dc = ", ".join(b.get("data_classes", [])[:4])
+                    console.print(f"         [dim]→ {b['name']} ({b.get('date','?')}) — {dc}[/dim]")
+            if dh_n:
+                dbs = ", ".join(el.get("dehashed_databases", [])[:3])
+                console.print(f"       Dehashed   : {dh_n} record(s) in [{dbs}]")
+            if el.get("emailrep_risk"):
+                cred_tag = " [red](creds leaked)[/red]" if el.get("emailrep_credentials_leaked") else ""
+                console.print(f"       EmailRep   : reputation={el['emailrep_risk']}{cred_tag}")
+            if el.get("holehe_sites"):
+                sites = ", ".join(el["holehe_sites"][:8])
+                console.print(f"       Holehe     : registered on {len(el['holehe_sites'])} platforms: {sites}")
+
+        for ul in li.get("username_leaks", []):
+            found_u = ul.get("leakcheck_found") or ul.get("dehashed_count", 0) > 0
+            icon_u  = "[red]✗[/red]" if found_u else "[green]✓[/green]"
+            console.print(f"\n    {icon_u} Username: [bold]{ul['username']}[/bold]")
+            if ul.get("leakcheck_found"):
+                srcs = ", ".join(ul.get("leakcheck_sources", [])[:4])
+                console.print(f"       LeakCheck  : {srcs or 'found'}")
+            if ul.get("dehashed_count"):
+                dbs_u = ", ".join(ul.get("dehashed_databases", [])[:3])
+                console.print(f"       Dehashed   : {ul['dehashed_count']} record(s) in [{dbs_u}]")
+
+        for pl in li.get("phone_leaks", []):
+            found_p = pl.get("dehashed_count", 0) > 0 or pl.get("snusbase_found")
+            icon_p  = "[red]✗[/red]" if found_p else "[green]✓[/green]"
+            console.print(f"\n    {icon_p} Phone: [bold]{pl['phone']}[/bold]")
+            if pl.get("dehashed_count"):
+                dbs_p = ", ".join(pl.get("dehashed_databases", [])[:3])
+                console.print(f"       Dehashed   : {pl['dehashed_count']} record(s)")
+            if pl.get("snusbase_found"):
+                console.print("       Snusbase   : found")
+
+        pm = li.get("paste_mentions", {})
+        um_paste = pm.get("username", {})
+        if um_paste.get("found"):
+            console.print(
+                f"\n    [yellow]Paste mentions[/yellow]: username found in "
+                f"{um_paste.get('count', 0)} paste(s)"
+            )
+            for u in (um_paste.get("urls") or [])[:3]:
+                console.print(f"      [link={u}]{u}[/link]")
+
+        recs = li.get("recommendations", [])
+        if recs:
+            console.print("\n    [bold yellow]Recommendations:[/bold yellow]")
+            for rec in recs:
+                console.print(f"      • {rec}")
 
     # Geolocation hints
     geo = data.get("geolocation_hints", {})

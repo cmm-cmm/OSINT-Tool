@@ -689,9 +689,13 @@ def cmd_breach(target, password, hibp_key, breachdir_key, report, output):
               help="Twitter/X username (with or without @)")
 @click.option("--reddit", "reddit_user", default=None, metavar="USERNAME",
               help="Reddit username (with or without u/)")
+@click.option("--tiktok-leak", "tiktok_leak", is_flag=True, default=False,
+              help="Kiểm tra email/username/phone TikTok trong breach databases (chậm hơn, dùng free APIs)")
+@click.option("--tiktok-holehe", "tiktok_holehe", is_flag=True, default=False,
+              help="Chạy holehe để xem email trong bio đã đăng ký 120+ platform nào (cần pip install holehe)")
 @click.option("--report", is_flag=True, help="Save HTML+JSON report")
 @click.option("--output", default=lambda: os.getenv("OSINT_OUTPUT_DIR", "."), help="Output directory for report")
-def cmd_social(fb_id, tt_user, ig_user, tw_user, reddit_user, report, output):
+def cmd_social(fb_id, tt_user, ig_user, tw_user, reddit_user, tiktok_leak, tiktok_holehe, report, output):
     """Investigate Facebook, TikTok, Instagram, Twitter/X and Reddit public profiles.
 
     Examples:
@@ -743,6 +747,8 @@ def cmd_social(fb_id, tt_user, ig_user, tw_user, reddit_user, report, output):
             tt_user,
             tokapi_key=os.getenv("TOKAPI_KEY"),
             tiktok_api_key=os.getenv("TIKTOK_API_KEY"),
+            leak_check=tiktok_leak,
+            run_holehe=tiktok_holehe,
         )
         all_data["tiktok"] = tt_data
         print_tiktok_results(tt_data)

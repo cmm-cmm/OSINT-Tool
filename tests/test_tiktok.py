@@ -558,3 +558,288 @@ class TestExportTikTokHtml:
         assert "<!DOCTYPE html>" in content
         assert "</html>" in content
         assert "<table" in content
+
+
+# ── _calc_leak_risk ───────────────────────────────────────────────────────────
+
+class TestCalcLeakRisk:
+    def _fn(self):
+        from modules.social.tiktok import _calc_leak_risk
+        return _calc_leak_risk
+
+    def test_risk_none_when_nothing_found(self):
+        fn = self._fn()
+        assert fn({"total_breach_sources": 0, "email_leaks": [], "paste_mentions": {}}) == "none"
+
+    def test_risk_low_when_one_source(self):
+        fn = self._fn()
+        assert fn({"total_breach_sources": 1, "email_leaks": [], "paste_mentions": {}}) == "low"
+
+    def test_risk_low_when_paste_only(self):
+        fn = self._fn()
+        assert fn({"total_breach_sources": 0, "email_leaks": [], "paste_mentions": {"found": True}}) == "low"
+
+    def test_risk_medium_when_two_sources(self):
+        fn = self._fn()
+        assert fn({"total_breach_sources": 2, "email_leaks": [], "paste_mentions": {}}) == "medium"
+
+    def test_risk_high_when_three_sources(self):
+        fn = self._fn()
+        assert fn({"total_breach_sources": 3, "email_leaks": [], "paste_mentions": {}}) == "high"
+
+    def test_risk_high_when_hibp_found(self):
+        fn = self._fn()
+        intel = {
+            "total_breach_sources": 1,
+            "email_leaks": [{"hibp_breach_count": 2}],
+            "paste_mentions": {},
+        }
+        assert fn(intel) == "high"
+
+    def test_risk_critical_when_passwords_exposed(self):
+        fn = self._fn()
+        intel = {
+            "total_breach_sources": 2,
+            "has_exposed_passwords": True,
+            "email_leaks": [],
+            "paste_mentions": {},
+        }
+        assert fn(intel) == "critical"
+
+    def test_risk_critical_when_hibp_and_many_sources(self):
+        fn = self._fn()
+        intel = {
+            "total_breach_sources": 4,
+            "has_exposed_passwords": False,
+            "email_leaks": [{"hibp_breach_count": 1}],
+            "paste_mentions": {},
+        }
+        assert fn(intel) == "critical"
+
+
+# ── check_tiktok_leaks ────────────────────────────────────────────────────────
+
+class TestCheckTikTokLeaks:
+    def _fn(self):
+        from modules.social.tiktok import check_tiktok_leaks
+        return check_tiktok_leaks
+
+    def _lc_no_result(self):
+        return {"found": False, "sources": []}
+
+    def _lc_found(self, sources=None):
+        return {"found": True, "sources": sources or ["TestDB 2023"]}
+
+    def test_returns_valid_structure_with_no_identifiers(self):
+        fn = self._fn()
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_no_result()), \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": None, "suspicious": None, "credentials_leaked": False}), \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": False, "mentions": 0, "urls": []}):
+            result = fn("testuser", emails=[], phone_e164_list=[], run_paste_check=True)
+        assert "risk_level" in result
+        assert "email_leaks" in result
+        assert "username_leaks" in result
+        assert "phone_leaks" in result
+        assert "paste_mentions" in result
+        assert "recommendations" in result
+
+    def test_risk_none_when_nothing_found(self):
+        fn = self._fn()
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_no_result()), \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": "low", "suspicious": False, "credentials_leaked": False}), \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": False, "mentions": 0, "urls": []}):
+            result = fn("testuser", emails=[], phone_e164_list=[])
+        assert result["risk_level"] == "none"
+        assert result["total_breach_sources"] == 0
+
+    def test_leakcheck_called_for_email(self):
+        fn = self._fn()
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_no_result()) as mock_lc, \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": None, "suspicious": None, "credentials_leaked": False}), \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": False, "mentions": 0, "urls": []}):
+            fn("testuser", emails=["test@example.com"], phone_e164_list=[])
+        assert mock_lc.call_count >= 1
+        calls = [str(c) for c in mock_lc.call_args_list]
+        assert any("test@example.com" in c for c in calls)
+
+    def test_leakcheck_called_for_username(self):
+        fn = self._fn()
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_no_result()) as mock_lc, \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": None, "suspicious": None, "credentials_leaked": False}), \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": False, "mentions": 0, "urls": []}):
+            fn("myuser123", emails=[], phone_e164_list=[])
+        calls = [str(c) for c in mock_lc.call_args_list]
+        assert any("myuser123" in c for c in calls)
+
+    def test_hibp_not_called_without_key(self):
+        fn = self._fn()
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_no_result()), \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": None, "suspicious": None, "credentials_leaked": False}), \
+             patch("modules.breach_check.check_hibp_email") as mock_hibp, \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": False, "mentions": 0, "urls": []}):
+            fn("testuser", emails=["test@example.com"], phone_e164_list=[], hibp_key="")
+        mock_hibp.assert_not_called()
+
+    def test_hibp_called_with_key(self):
+        fn = self._fn()
+        hibp_resp = {"breaches": [{"name": "TestBreach", "date": "2023-01-01", "data_classes": ["Email"], "description": "Test"}], "pastes": []}
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_no_result()), \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": None, "suspicious": None, "credentials_leaked": False}), \
+             patch("modules.breach_check.check_hibp_email", return_value=hibp_resp) as mock_hibp, \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": False, "mentions": 0, "urls": []}):
+            result = fn("testuser", emails=["test@example.com"], phone_e164_list=[], hibp_key="fake-key")
+        mock_hibp.assert_called_once_with("test@example.com", "fake-key")
+        assert result["email_leaks"][0]["hibp_breach_count"] == 1
+
+    def test_email_leak_found_increases_risk(self):
+        fn = self._fn()
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_found()) as _, \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": "medium", "suspicious": True, "credentials_leaked": False}), \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": False, "mentions": 0, "urls": []}):
+            result = fn("testuser", emails=["leaked@example.com"], phone_e164_list=[])
+        assert result["risk_level"] != "none"
+        assert result["email_leaks"][0]["leakcheck_found"] is True
+
+    def test_dehashed_not_called_without_keys(self):
+        fn = self._fn()
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_no_result()), \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": None, "suspicious": None, "credentials_leaked": False}), \
+             patch("modules.breach_check.check_dehashed") as mock_dh, \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": False, "mentions": 0, "urls": []}):
+            fn("testuser", emails=["t@x.com"], phone_e164_list=[], dehashed_email="", dehashed_key="")
+        mock_dh.assert_not_called()
+
+    def test_phone_checked_in_dehashed_when_key_provided(self):
+        fn = self._fn()
+        dh_resp = {"found": True, "entries": [{"database_name": "TestDB"}], "total": 1}
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_no_result()), \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": None, "suspicious": None, "credentials_leaked": False}), \
+             patch("modules.breach_check.check_dehashed", return_value=dh_resp) as mock_dh, \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": False, "mentions": 0, "urls": []}):
+            result = fn("testuser", emails=[], phone_e164_list=["+84901234567"],
+                        dehashed_email="admin@test.com", dehashed_key="fakekey")
+        phone_calls = [c for c in mock_dh.call_args_list if "phone" in str(c)]
+        assert len(phone_calls) >= 1
+        assert result["phone_leaks"][0]["dehashed_count"] == 1
+
+    def test_paste_check_called_for_username(self):
+        fn = self._fn()
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_no_result()), \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": None, "suspicious": None, "credentials_leaked": False}), \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": True, "mentions": 2, "urls": ["https://pastebin.com/xxx"]}) as mock_paste:
+            result = fn("testuser", emails=[], phone_e164_list=[], run_paste_check=True)
+        assert mock_paste.called
+        assert result["paste_mentions"]["username"]["found"] is True
+
+    def test_paste_check_skipped_when_disabled(self):
+        fn = self._fn()
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_no_result()), \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": None, "suspicious": None, "credentials_leaked": False}), \
+             patch("modules.darkweb_monitor.check_pastebin") as mock_paste:
+            fn("testuser", emails=[], phone_e164_list=[], run_paste_check=False)
+        mock_paste.assert_not_called()
+
+    def test_holehe_not_called_by_default(self):
+        fn = self._fn()
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_no_result()), \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": None, "suspicious": None, "credentials_leaked": False}), \
+             patch("modules.breach_check.check_holehe") as mock_ho, \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": False, "mentions": 0, "urls": []}):
+            fn("testuser", emails=["t@x.com"], phone_e164_list=[], run_holehe=False)
+        mock_ho.assert_not_called()
+
+    def test_holehe_called_when_enabled(self):
+        fn = self._fn()
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_no_result()), \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": None, "suspicious": None, "credentials_leaked": False}), \
+             patch("modules.breach_check.check_holehe", return_value={"registered_sites": [{"name": "GitHub"}], "checked": 1}) as mock_ho, \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": False, "mentions": 0, "urls": []}):
+            result = fn("testuser", emails=["t@x.com"], phone_e164_list=[], run_holehe=True)
+        mock_ho.assert_called_once_with("t@x.com")
+        assert "GitHub" in result["email_leaks"][0]["holehe_sites"]
+
+    def test_has_exposed_passwords_flag_set(self):
+        fn = self._fn()
+        dh_resp = {"found": True, "entries": [{"database_name": "DB1", "password": "hunter2"}], "total": 1}
+        with patch("modules.breach_check.check_leakcheck_public", return_value=self._lc_no_result()), \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": None, "suspicious": None, "credentials_leaked": False}), \
+             patch("modules.breach_check.check_dehashed", return_value=dh_resp), \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": False, "mentions": 0, "urls": []}):
+            result = fn("testuser", emails=["t@x.com"], phone_e164_list=[],
+                        dehashed_email="a@b.com", dehashed_key="key")
+        assert result["has_exposed_passwords"] is True
+
+    def test_max_three_emails_checked(self):
+        fn = self._fn()
+        call_count = []
+        def mock_lc(q):
+            call_count.append(q)
+            return {"found": False, "sources": []}
+        with patch("modules.breach_check.check_leakcheck_public", side_effect=mock_lc), \
+             patch("modules.breach_check.check_emailrep", return_value={"reputation": None, "suspicious": None, "credentials_leaked": False}), \
+             patch("modules.darkweb_monitor.check_pastebin", return_value={"found": False, "mentions": 0, "urls": []}):
+            fn("testuser", emails=["a@x.com", "b@x.com", "c@x.com", "d@x.com"], phone_e164_list=[])
+        email_calls = [c for c in call_count if "@" in c]
+        assert len(email_calls) <= 3
+
+
+# ── tiktok_recon leak_check integration ──────────────────────────────────────
+
+class TestTikTokReconLeakCheckIntegration:
+    def _run(self, **kwargs):
+        from modules.social.tiktok import tiktok_recon
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.text = ""
+        with patch("requests.get", return_value=mock_resp), \
+             patch("requests.Session") as ms:
+            ms.return_value.get.return_value = mock_resp
+            return tiktok_recon("testuser", **kwargs)
+
+    def test_leak_intel_key_in_result(self):
+        result = self._run()
+        assert "leak_intel" in result
+
+    def test_leak_intel_empty_when_disabled(self):
+        result = self._run(leak_check=False)
+        assert result["leak_intel"] == {}
+
+    def test_check_tiktok_leaks_not_called_when_disabled(self):
+        from modules.social.tiktok import tiktok_recon
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.text = ""
+        with patch("requests.get", return_value=mock_resp), \
+             patch("requests.Session") as ms, \
+             patch("modules.social.tiktok.check_tiktok_leaks") as mock_ctl:
+            ms.return_value.get.return_value = mock_resp
+            tiktok_recon("testuser", leak_check=False)
+        mock_ctl.assert_not_called()
+
+    def test_check_tiktok_leaks_called_when_enabled(self):
+        from modules.social.tiktok import tiktok_recon
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.text = ""
+        fake_leak = {"risk_level": "none", "total_breach_sources": 0, "email_leaks": [], "username_leaks": [], "phone_leaks": [], "paste_mentions": {}, "recommendations": [], "checked_identifiers": [], "has_exposed_passwords": False}
+        with patch("requests.get", return_value=mock_resp), \
+             patch("requests.Session") as ms, \
+             patch("modules.social.tiktok.check_tiktok_leaks", return_value=fake_leak) as mock_ctl:
+            ms.return_value.get.return_value = mock_resp
+            result = tiktok_recon("testuser", leak_check=True)
+        mock_ctl.assert_called_once()
+        assert result["leak_intel"]["risk_level"] == "none"
+
+    def test_run_holehe_passed_to_check_tiktok_leaks(self):
+        from modules.social.tiktok import tiktok_recon
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.text = ""
+        fake_leak = {"risk_level": "none", "total_breach_sources": 0, "email_leaks": [], "username_leaks": [], "phone_leaks": [], "paste_mentions": {}, "recommendations": [], "checked_identifiers": [], "has_exposed_passwords": False}
+        with patch("requests.get", return_value=mock_resp), \
+             patch("requests.Session") as ms, \
+             patch("modules.social.tiktok.check_tiktok_leaks", return_value=fake_leak) as mock_ctl:
+            ms.return_value.get.return_value = mock_resp
+            tiktok_recon("testuser", leak_check=True, run_holehe=True)
+        _, kwargs = mock_ctl.call_args
+        assert kwargs.get("run_holehe") is True
